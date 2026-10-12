@@ -426,6 +426,11 @@
       count: Math.max(bullish, bearish),
       confidence: confidence,
       excluded: dropSentiment ? ['Sentiment'] : [],
+      // Motivo breve mostrato sotto il riquadro dello studio escluso: l'app tiene
+      // visibili i tre studi e dichiara perché uno non pesa nel verdetto.
+      excludedReason: dropSentiment
+        ? 'Fuori dal verdetto: con i dati reali misura una sola coppia, non aggiunge informazione indipendente.'
+        : '',
       text: text
     };
   }

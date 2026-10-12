@@ -536,6 +536,9 @@
       Math.abs(cfReduced.score - expectedRed) < 1e-9,
     'Confluenza ridotta: sentiment escluso, pesi ricalcolati',
     'score=' + cfReduced.score.toFixed(4) + ' atteso ' + expectedRed.toFixed(4));
+  log(/Fuori dal verdetto/.test(cfReduced.excludedReason) && cfAll.excludedReason === '',
+    'Il motivo dell\u2019esclusione è dichiarato solo quando serve',
+    cfReduced.excludedReason.slice(0, 44) + '\u2026');
   log(cfAll.parts.length === 3 && cfAll.excluded.length === 0 && cfAll.text.indexOf('I tre modelli') === 0,
     'La confluenza piena resta identica a prima');
 

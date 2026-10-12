@@ -263,7 +263,7 @@ con dimensioni del pip corrette (0,0001 per EUR/USD, 0,01 per USD/JPY, 0,01 USD 
 I test girano in un browser e funzionano anche aperti direttamente da `file://`
 (la pagina mostra PASS/FAIL a schermo):
 
-- `tests/selfcheck.html` — 101 controlli: indicatori su serie costruite a mano, validità
+- `tests/selfcheck.html` — 102 controlli: indicatori su serie costruite a mano, validità
   delle serie OHLC, ordine cronologico, motore previsionale e backtest, assenza di NaN
   su 84 combinazioni strumento × timeframe (ora anche M10), realismo della volatilità,
   **SMC** (swing, BOS/CHoCH, order block, FVG, liquidità, range/OTE, coerenza dello
@@ -274,15 +274,16 @@ I test girano in un browser e funzionano anche aperti direttamente da `file://`
   e **report** (sezioni presenti, glossario completo rispetto ai termini usati, frasi
   brevi, numeri coerenti con i dati, sezione "La fonte dei dati" nei due casi: reale e
   simulata).
-- `tests/smoke.html` — 90 controlli end-to-end sull'interfaccia in modalità simulata
+- `tests/smoke.html` — 92 controlli end-to-end sull'interfaccia in modalità simulata
   (deterministica) più 13 controlli sul ponte dei dati reali quando il server è attivo
-  (103 totali): caricamento dei moduli, popolamento di tutte le sezioni (comprese
+  (105 totali): caricamento dei moduli, popolamento di tutte le sezioni (comprese
   confluenza, SMC, sentiment e report), rendering del canvas e dei livelli SMC,
   apertura/chiusura/copia del report, cambio coppia e timeframe, registrazione e
   chiusura di un trade virtuale, assenza di errori JavaScript.
-- `tests/live.html` — 23 controlli end-to-end con il ponte dei dati reali attivo:
+- `tests/live.html` — 26 controlli end-to-end con il ponte dei dati reali attivo:
   badge e ora di aggiornamento, prezzo EUR/USD reale, analisi calcolate sui prezzi veri,
-  verdetto ridotto a tecnico+SMC, scheda sentiment che dichiara l'universo ridotto,
+  i tre studi sempre visibili con il sentiment marcato «escluso dal verdetto» e il
+  verdetto che pesa solo i modelli con un universo completo,
   report con la sezione "La fonte dei dati", passaggio a GBP/JPY (badge che torna
   simulato) e ritorno a EUR/USD, storia giornaliera di 5 anni dichiarata
   nell'interfaccia, assenza di errori JavaScript.

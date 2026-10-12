@@ -129,8 +129,13 @@
     log($$('#journalBody tr.empty-row').length === 1 || $$('#journalBody tr[data-id]').length > 0, 'Registro operazioni inizializzato');
 
     // --- nuovi moduli: confluenza, SMC, sentiment -------------------
-    log($$('#confGrid .conf-item').length === 3, 'Tre riquadri di confluenza (tecnico, SMC, sentiment)',
-      $$('#confGrid .conf-item .val').map(function (e) { return e.textContent; }).join(' | '));
+    log($$('#confGrid .conf-item').length === 3, 'Tre riquadri di confluenza (analisi tecnica, SMC, sentiment)',
+      $$('#confGrid .conf-item .name').map(function (e) { return e.textContent; }).join(' | '));
+    log(/analisi tecnica/.test($('#confStamp').textContent) && /SMC/.test($('#confStamp').textContent) &&
+      /sentiment/.test($('#confStamp').textContent),
+      'L\u2019intestazione elenca i tre studi', $('#confStamp').textContent);
+    log($$('#confGrid .conf-item.excluded').length === 0,
+      'In modalità simulata i tre studi entrano tutti nel verdetto');
     log(/\d/.test($('#confGrid .conf-item .val').textContent), 'Punteggi dei modelli mostrati',
       $('#confGrid .conf-item .val').textContent);
     log($('#confVerdict .tag-big') && /^(ACQUISTO|VENDITA|NEUTRO)$/.test($('#confVerdict .tag-big').textContent),

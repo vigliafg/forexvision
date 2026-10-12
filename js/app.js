@@ -640,31 +640,45 @@
   function renderConfluence() {
     const c = state.confluence;
     if (!c) return;
-    // I riquadri seguono la lista autoritativa `parts`: quando il sentiment è
-    // escluso dal verdetto (universo reale ridotto), non viene più mostrato.
-    const sources = {
-      'Tecnico': { dir: state.analysis.direction, score: state.analysis.score },
-      'SMC': { dir: state.smc.signal, score: state.smc.score },
-      'Sentiment': { dir: state.sentiment ? state.sentiment.direction : 'NEUTRO', score: state.sentiment ? state.sentiment.score : 0 }
-    };
-    const tiles = c.parts.map(function (p) {
-      const src = sources[p.name] || { dir: p.score >= 0.1 ? 'ACQUISTO' : p.score <= -0.1 ? 'VENDITA' : 'NEUTRO', score: p.score };
-      return { name: p.name, dir: src.dir, score: src.score };
-    });
+    // I tre studi dell'app restano sempre visibili, con gli stessi nomi usati nel
+    // report: analisi tecnica, analisi SMC e sentiment di mercato. Quando uno studio
+    // non entra nel verdetto (il sentiment, con i dati reali di una sola coppia) il
+    // suo riquadro lo dichiara invece di sparire: il verdetto resta sui modelli
+    // affidabili, ma nessuno studio viene nascosto all'utente.
+    const active = {};
+    c.parts.forEach(function (p) { active[p.name] = true; });
+    const studies = [
+      { name: 'Tecnico', label: 'Analisi tecnica', short: 'analisi tecnica',
+        dir: state.analysis.direction, score: state.analysis.score },
+      { name: 'SMC', label: 'Analisi SMC', short: 'SMC',
+        dir: state.smc.signal, score: state.smc.score },
+      { name: 'Sentiment', label: 'Sentiment di mercato', short: 'sentiment',
+        dir: state.sentiment ? state.sentiment.direction : 'NEUTRAL',
+        score: state.sentiment ? state.sentiment.score : 0 }
+    ];
 
-    $('confGrid').innerHTML = tiles.map(function (t) {
-      const color = scoreColor(t.score);
-      const pos = (t.score + 1) / 2 * 100;
-      const fillLeft = t.score >= 0 ? 50 : 50 + t.score * 50;
-      const fillW = Math.abs(t.score) * 50;
+    // Intestazione: elenca i tre studi e segnala quelli fuori dal verdetto.
+    $('confStamp').textContent = studies.map(function (s) {
+      return active[s.name] ? s.short : '(' + s.short + ' escluso dal verdetto)';
+    }).join(' \u00b7 ');
+
+    $('confGrid').innerHTML = studies.map(function (s) {
+      const used = !!active[s.name];
+      const dir = used ? s.dir : 'NEUTRAL';
+      const color = used ? scoreColor(s.score) : 'var(--dim)';
+      const pos = (s.score + 1) / 2 * 100;
+      const fillLeft = s.score >= 0 ? 50 : 50 + s.score * 50;
+      const fillW = Math.abs(s.score) * 50;
       return '' +
-        '<div class="conf-item">' +
-          '<div class="name"><span>' + t.name + '</span><span style="color:' + color + '">' + DIR_LABEL[t.dir] + '</span></div>' +
-          '<div class="val" style="color:' + color + '">' + signed(t.score, 3) + '</div>' +
+        '<div class="conf-item' + (used ? '' : ' excluded') + '">' +
+          '<div class="name"><span>' + s.label + '</span><span style="color:' +
+            (used ? color : 'var(--warn)') + '">' + (used ? DIR_LABEL[dir] : 'escluso') + '</span></div>' +
+          '<div class="val" style="color:' + color + '">' + signed(s.score, 3) + '</div>' +
           '<div class="conf-bar" style="color:' + color + '">' +
             '<b style="left:' + fillLeft + '%;width:' + fillW + '%;background:' + color + '"></b>' +
             '<i style="left:' + pos + '%"></i>' +
           '</div>' +
+          (used ? '' : '<div class="conf-note">' + c.excludedReason + '</div>') +
         '</div>';
     }).join('');
 

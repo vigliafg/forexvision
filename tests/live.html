@@ -111,9 +111,18 @@
     log(isFinite(atr) && atr > 0, 'ATR positivo (dati reali)', atr);
 
     // --- confluenza ridotta: il sentiment ha un solo cambio reale ----------
-    log($$('#confGrid .conf-item').length === 2,
-      'Il verdetto combina solo i modelli con un universo completo (2 riquadri)',
+    log($$('#confGrid .conf-item').length === 3,
+      'I tre studi restano visibili anche con i dati reali',
       $$('#confGrid .conf-item .name').map(function (e) { return e.textContent; }).join(' + '));
+    log($$('#confGrid .conf-item.excluded').length === 1 &&
+      /Sentiment di mercato/.test($('#confGrid .conf-item.excluded .name').textContent),
+      'Lo studio fuori dal verdetto \u00e8 marcato come escluso',
+      $('#confGrid .conf-item.excluded').textContent);
+    log(/escluso dal verdetto/.test($('#confStamp').textContent),
+      'L\u2019intestazione dichiara lo studio escluso', $('#confStamp').textContent);
+    log(/\/2 modelli concordi/.test($('#confVerdict').textContent),
+      'Il verdetto combina solo i modelli con un universo completo (2 su 2)',
+      $('#confVerdict').textContent.slice(0, 90) + '\u2026');
     log(/^(ACQUISTO|VENDITA|NEUTRO)$/.test($('#confVerdict .tag-big').textContent),
       'Verdetto di confluenza presente', $('#confVerdict').textContent.slice(0, 60) + '\u2026');
 
