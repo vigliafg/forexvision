@@ -2,19 +2,42 @@
 # ---------------------------------------------------------------------------
 # ForexVision - avvio della webapp
 #
-# Uso:  ./avvia.sh          avvia il server locale (con dati reali) e apre l'app
-#       ./avvia.sh --file   forza l'apertura diretta del file (file://)
-#       ./avvia.sh --stop   ferma il server locale avviato in precedenza
+# Uso:  ./avvia.sh                  avvia il server locale (con dati reali) e apre l'app
+#       ./avvia.sh --lan            rende l'app raggiungibile dalla rete locale
+#       ./avvia.sh --host 0.0.0.0   come --lan, con un indirizzo scelto a mano
+#       ./avvia.sh --file           forza l'apertura diretta del file (file://)
+#       ./avvia.sh --stop           ferma il server locale avviato in precedenza
 #
 # Il server (server.py) serve i file e, attraverso /api/candles, porta i
 # prezzi reali di EUR/USD da Yahoo Finance. Senza rete l'app ripiega da sola
 # sulla modalità simulata, dichiarandolo in alto a destra.
+#
+# Con --lan il ponte ascolta su tutte le interfacce (rete locale e Tailscale):
+# utile per usare l'app dal telefono o da un altro computer. L'app non chiede
+# password: apri la porta solo su reti di cui ti fidi.
 # ---------------------------------------------------------------------------
 set -u
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${PORT:-8901}"
 PIDFILE_BASE="/tmp/forexvision"
+HOST="${FOREXVISION_HOST:-127.0.0.1}"
+OPZIONE=""
+
+# --- opzioni di rete ------------------------------------------------------
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --lan)     HOST="0.0.0.0"; shift ;;
+    --host)    HOST="${2:-}"; shift 2 ;;
+    --host=*)  HOST="${1#*=}"; shift ;;
+    *)         [ -z "$OPZIONE" ] && OPZIONE="$1"; shift ;;
+  esac
+done
+
+case "$OPZIONE" in
+  ""|--file|--stop) ;;
+  *) echo "Opzione non riconosciuta: $OPZIONE"; echo "Uso: ./avvia.sh [--lan|--host INDIRIZZO|--file|--stop]"; exit 2 ;;
+esac
 
 # --- utilita' -------------------------------------------------------------
 
@@ -46,14 +69,23 @@ apri() {
 
 # --- stop -----------------------------------------------------------------
 
-if [ "${1:-}" = "--stop" ]; then
+if [ "$OPZIONE" = "--stop" ]; then
   fermato=0
   for f in "${PIDFILE_BASE}"-*.pid; do
     [ -f "$f" ] || continue
+    porta="$(basename "$f" .pid | sed 's/.*-//')"
     pid="$(cat "$f")"
     if kill "$pid" 2>/dev/null; then
-      echo "Server locale fermato (pid $pid, porta $(basename "$f" .pid | sed 's/.*-//'))."
+      # il server puo' impiegare un istante a mollare la porta
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.3
+      done
+      kill -9 "$pid" 2>/dev/null
+      echo "Server locale fermato (pid $pid, porta $porta)."
       fermato=1
+    else
+      echo "Nessun processo attivo per la porta $porta (pidfile vecchio: $pid)."
     fi
     rm -f "$f"
   done
@@ -63,7 +95,7 @@ fi
 
 # --- apertura diretta del file -------------------------------------------
 
-if [ "${1:-}" = "--file" ] || ! command -v python3 >/dev/null 2>&1; then
+if [ "$OPZIONE" = "--file" ] || ! command -v python3 >/dev/null 2>&1; then
   echo "Apertura diretta del file."
   apri "file://$DIR/index.html"
   echo "Percorso: $DIR/index.html"
@@ -89,8 +121,12 @@ PIDFILE="${PIDFILE_BASE}-${scelta}.pid"
 if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
   echo "Server gia' attivo sulla porta $scelta."
 else
-  ( cd "$DIR" && nohup python3 "$DIR/server.py" --port "$scelta" --no-browser \
-      >"/tmp/forexvision-server-$scelta.log" 2>&1 & echo $! > "$PIDFILE" )
+  # `exec` fa diventare la sottoshell il processo del server: cosi' il pid
+  # salvato e' quello vero di python e `--stop` lo ferma davvero (senza exec
+  # si registrava la sottoshell, e il server restava vivo e in ascolto).
+  ( cd "$DIR" && exec nohup python3 "$DIR/server.py" --port "$scelta" --host "$HOST" --no-browser \
+      >"/tmp/forexvision-server-$scelta.log" 2>&1 ) &
+  echo $! > "$PIDFILE"
   # attesa che il server risponda (max ~5 secondi)
   pronta=0
   for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -110,6 +146,10 @@ else
   fi
   echo "Server locale attivo su http://127.0.0.1:$scelta"
   echo "Log: /tmp/forexvision-server-$scelta.log (fermalo con: ./avvia.sh --stop)"
+  if [ "$HOST" != "127.0.0.1" ]; then
+    # il server ha gia' stampato gli indirizzi con cui e' raggiungibile
+    grep -E "dalla rete|attenzione: la porta" "/tmp/forexvision-server-$scelta.log" 2>/dev/null | sed 's/^/  /'
+  fi
 fi
 
 apri "http://127.0.0.1:$scelta/index.html"

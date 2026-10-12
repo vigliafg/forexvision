@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<title>ForexVision - avvio con ponte lento</title>
+<style>
+  body{background:#0b1017;color:#e6edf7;font:13px/1.5 "JetBrains Mono",monospace;margin:0}
+  #log{padding:14px}
+  .pass{color:#18c98a}.fail{color:#f2555a}.info{color:#8fa3bf}.skip{color:#f0b429}
+  #summary{font-size:18px;font-weight:700;padding:8px 12px;border:1px solid #22304a;border-radius:8px;background:#141d2b;display:inline-block;margin:12px 14px}
+  iframe{width:1400px;height:2000px;border:0;position:absolute;left:-10000px;top:0}
+</style>
+</head>
+<body>
+<div id="summary">in esecuzione...</div>
+<div id="log"></div>
+<iframe id="app" src="../index.html"></iframe>
+<script>
+/*
+ * Avvio con il ponte lento.
+ *
+ * Il ponte di prova (server.py --delay-ms) ritarda le risposte /api/ di circa
+ * 3 secondi. Nella prima fase di vita dell'app i timer sono gia' attivi - il
+ * tick "live" scatta ogni 2,5 secondi - ma la prima serie di prezzi non e'
+ * ancora arrivata: qui si verifica che l'app attraversi quella finestra senza
+ * errori JavaScript e che, quando i dati arrivano, si disegni normalmente.
+ *
+ * Richiede il ponte attivo con il ritardo impostato:
+ *   python3 server.py --port 8914 --delay-ms 3200 --no-browser
+ */
+(function () {
+  var SLOW_MIN_MS = 2500;   // sotto questa soglia il test non prova piu' niente
+  var ARRIVO_MS = 30000;    // attesa massima per i dati reali
+
+  var out = document.getElementById('log');
+  var lines = [], pass = 0, fail = 0;
+  var reported = false;
+  var ownErrors = [];
+
+  // Gli errori della pagina di test stessa: senza questi il test potrebbe morire
+  // in silenzio e non inviare nessun report (successo, purtroppo).
+  window.addEventListener('error', function (e) {
+    ownErrors.push((e.message || 'errore') + ' @ ' + (e.filename || '?') + ':' + (e.lineno || 0));
+  });
+
+  function log(ok, label, extra) {
+    ok ? pass++ : fail++;
+    var p = document.createElement('pre');
+    p.className = ok ? 'pass' : 'fail';
+    p.textContent = (ok ? 'PASS  ' : 'FAIL  ') + label + (extra ? '   |  ' + extra : '');
+    out.appendChild(p);
+    lines.push(p.textContent);
+  }
+  function info(t) {
+    var p = document.createElement('pre');
+    p.className = 'info';
+    p.textContent = t;
+    out.appendChild(p);
+    lines.push(t);
+  }
+  function $(sel, root) { return (root || frame.contentDocument).querySelector(sel); }
+  function $$(sel, root) { return Array.prototype.slice.call((root || frame.contentDocument).querySelectorAll(sel)); }
+
+  var frame = document.getElementById('app');
+  var t0 = Date.now();
+
+  function waitFor(cond, ms, step) {
+    return new Promise(function (resolve) {
+      var start = Date.now();
+      var timer = setInterval(function () {
+        var ok = false;
+        try { ok = cond(); } catch (e) { ok = false; }
+        if (ok || Date.now() - start > (ms || 12000)) { clearInterval(timer); resolve(ok); }
+      }, step || 120);
+    });
+  }
+
+  function errors(w) {
+    try { return (w.__errors || []).slice(); } catch (e) { return ['lettura degli errori non riuscita']; }
+  }
+
+  /** Tocca il grafico: esercita i gestori del crosshair, che leggono la serie. */
+  function pokeChart(w, doc) {
+    var el = doc.getElementById('chart');
+    if (!el) return false;
+    var rect = el.getBoundingClientRect();
+    var x = rect.left + rect.width * 0.6;
+    var y = rect.top + rect.height * 0.4;
+    ['mousemove', 'mouseleave', 'mousemove'].forEach(function (type) {
+      el.dispatchEvent(new w.MouseEvent(type, { bubbles: true, clientX: x, clientY: y }));
+    });
+    return true;
+  }
+
+  function report() {
+    if (reported) return;
+    reported = true;
+    log(ownErrors.length === 0, 'La pagina di test non ha avuto errori propri',
+      ownErrors.length ? ownErrors.join(' ; ') : 'nessun errore');
+    var sum = document.getElementById('summary');
+    sum.textContent = (fail === 0 ? 'AVVIO LENTO SUPERATO: ' : 'AVVIO LENTO FALLITO: ') + pass + '/' + (pass + fail) + ' test';
+    sum.className = fail === 0 ? 'pass' : 'fail';
+    lines.push('');
+    lines.push('SUMMARY: ' + sum.textContent);
+    try {
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', '/report', false);
+      xhr.setRequestHeader('Content-Type', 'text/plain');
+      xhr.send(lines.join('\n'));
+    } catch (err) {}
+  }
+
+  // Rete di sicurezza: qualunque cosa vada storta, un report deve arrivare.
+  setTimeout(function () {
+    if (reported) return;
+    fail++;
+    var p = document.createElement('pre');
+    p.className = 'fail';
+    p.textContent = 'FAIL  Il test \u00e8 arrivato in fondo   |  fermato dopo 75 s senza concludere';
+    out.appendChild(p);
+    report();
+  }, 75000);
+
+  frame.addEventListener('load', function () {
+    setTimeout(function () {
+      try { runChecks(); } catch (e) {
+        log(false, 'Il test \u00e8 partito senza errori interni', e.message);
+        report();
+      }
+    }, 300);
+  });
+
+  function runChecks() {
+    var w = frame.contentWindow, doc = frame.contentDocument;
+    info('avvio osservato: attesa massima ' + ARRIVO_MS + ' ms, soglia di lentezza ' + SLOW_MIN_MS + ' ms');
+
+    // Il tick scatta 2,5 s dopo l'avvio dell'app: si campiona piu' volte dentro
+    // la finestra in cui i dati non sono ancora arrivati.
+    var samples = [3000, 3600, 4200, 4800];
+    var atWindow = 0, pokeOk = true, windowErrors = null;
+
+    function sampleAt(ms) {
+      return new Promise(function (resolve) {
+        setTimeout(function () {
+          try {
+            var badge = $('#feedBadge').textContent;
+            if (badge.indexOf('DATI REALI') !== 0) atWindow++;
+            if (!pokeChart(w, doc)) pokeOk = false;
+            var errs = errors(w);
+            if (errs.length && !windowErrors) windowErrors = errs;
+          } catch (e) {
+            windowErrors = windowErrors || ['eccezione nel test: ' + e.message];
+          }
+          resolve();
+        }, ms - (Date.now() - t0));
+      });
+    }
+
+    samples.reduce(function (p, ms) { return p.then(function () { return sampleAt(ms); }); }, Promise.resolve())
+      .then(function () {
+        log(atWindow > 0, 'Nella prima fase l\u2019app non ha ancora i prezzi reali',
+          'campioni senza dati: ' + atWindow + '/' + samples.length + ' \u00b7 badge: ' + $('#feedBadge').textContent);
+        log(pokeOk, 'Il grafico \u00e8 pronto a ricevere il crosshair prima dei dati');
+        log(!windowErrors, 'Passare il mouse sul grafico senza serie non genera errori',
+          windowErrors ? windowErrors.join(' ; ') : 'nessun errore');
+
+        // ora i dati devono arrivare e l'app deve disegnarsi
+        return waitFor(function () { return /\bDATI REALI\b/.test($('#feedBadge').textContent); }, ARRIVO_MS, 250);
+      })
+      .then(function (arrived) {
+        log(arrived, 'Dopo l\u2019attesa i dati reali arrivano', $('#feedBadge').textContent);
+
+        var price = parseFloat($('#lastPrice').textContent);
+        log(isFinite(price) && price > 0, 'Il prezzo reale \u00e8 mostrato', $('#lastPrice').textContent);
+        log($$('#confGrid .conf-item').length === 3, 'I tre studi sono stati calcolati dopo l\u2019arrivo dei dati',
+          $('#confStamp').textContent);
+
+        var before = errors(w).length;
+        pokeChart(w, doc);
+        var after = errors(w).length;
+        log(after === before, 'Toccare il grafico con i dati non aggiunge errori',
+          after === before ? 'nessun errore nuovo' : 'errori nuovi: ' + (after - before));
+        log(errors(w).length === 0, 'Nessun errore JavaScript nell\u2019intero avvio lento',
+          errors(w).join(' ; ') || 'nessun errore');
+
+        // il test ha senso solo se il ponte era davvero lento
+        var t1 = Date.now();
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/status?lentezza=' + Date.now());
+        xhr.timeout = 20000;
+        xhr.onload = xhr.onerror = xhr.ontimeout = function () {
+          var ms = Date.now() - t1;
+          log(ms >= SLOW_MIN_MS, 'Il ponte di prova risponde davvero con ritardo', ms + ' ms di attesa');
+          report();
+        };
+        xhr.send();
+      })
+      .catch(function (err) {
+        log(false, 'La sequenza di controlli \u00e8 arrivata in fondo', err && err.message);
+        report();
+      });
+  }
+})();
+</script>
+</body>
+</html>

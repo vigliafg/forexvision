@@ -20,6 +20,7 @@ In entrambi i casi nessuna chiave API è necessaria.
 ```bash
 cd ~/Documenti/forex
 ./avvia.sh              # avvia server.py (file + dati reali) e apre il browser
+./avvia.sh --lan        # come sopra, ma raggiungibile anche dalla rete locale
 ./avvia.sh --file       # apre direttamente index.html (file://): solo dati simulati
 ./avvia.sh --stop       # ferma il server locale
 ```
@@ -28,6 +29,31 @@ Il server `server.py` serve i file **e** espone `/api/candles`, che scarica i pr
 reali da Yahoo Finance, li ripulisce e li riconverte nel formato dell'app. Se il server
 non è in esecuzione (apertura diretta da `file://`, niente rete, fornitore irraggiungibile)
 l'app ripiega **da sola** sulla modalità simulata e lo segnala nel badge in alto.
+
+### Usare l'app da un altro dispositivo
+
+Per impostazione predefinita il ponte ascolta **solo su `127.0.0.1`**, cioè è
+raggiungibile unicamente da questa macchina. Per aprirlo alla rete locale (telefono,
+tablet, un altro computer, o la rete Tailscale se è attiva):
+
+```bash
+./avvia.sh --lan                # ascolta su tutte le interfacce
+./avvia.sh --host 192.168.1.124 # solo su un indirizzo scelto
+```
+
+All'avvio il ponte elenca gli indirizzi con cui è raggiungibile, per esempio
+`http://192.168.1.124:8901/index.html`. Lo stesso si ottiene direttamente da
+`server.py` con `--host 0.0.0.0` (o con la variabile `FOREXVISION_HOST`).
+
+Non serve toccare il firewall: se `ufw`, `firewalld` o regole `nft`/`iptables` non sono
+presenti, la porta in ingresso non è filtrata (qui la catena `INPUT` ha politica
+`ACCEPT`, con le sole regole aggiunte da Tailscale). Se in futuro si installa un
+firewall, va aperta la porta scelta (`sudo ufw allow 8901/tcp` e simili).
+
+Attenzione: l'app **non chiede password**. Chi raggiunge quella porta vede l'app,
+i dati di mercato e gli endpoint del ponte. Va usata su reti di cui ci si fida
+(casa, VPN Tailscale), non su reti pubbliche, e l'opzione è volutamente esplicita:
+senza `--lan` o `--host` il ponte resta chiuso su `127.0.0.1`.
 
 ## Struttura
 
@@ -50,6 +76,7 @@ forex/
 │   ├── selfcheck.html    test automatici sui moduli
 │   ├── smoke.html        test end-to-end sull'interfaccia (modalità simulata)
 │   ├── live.html         test end-to-end con i dati reali del ponte
+│   ├── slowstart.html    avvio con il ponte lento (corse all'avvio)
 │   └── calibration.html  misura della calibrazione di volatilità
 └── avvia.sh              script di avvio
 ```
@@ -287,6 +314,14 @@ I test girano in un browser e funzionano anche aperti direttamente da `file://`
   report con la sezione "La fonte dei dati", passaggio a GBP/JPY (badge che torna
   simulato) e ritorno a EUR/USD, storia giornaliera di 5 anni dichiarata
   nell'interfaccia, assenza di errori JavaScript.
+- `tests/slowstart.html` — 10 controlli sull'avvio con il ponte **lento**. Il ponte di
+  prova (`server.py --delay-ms 3200`) ritarda di tre secondi le risposte `/api/`: nei
+  primi secondi l'app ha già i timer attivi (il tick "live" scatta ogni 2,5 s) ma non ha
+  ancora ricevuto la prima serie di prezzi. La suite verifica che quella finestra passi
+  senza errori JavaScript, che il crosshair sul grafico vuoto non rompa niente, che i
+  dati arrivino e che il ritardo ci sia davvero (altrimenti il test non proverebbe
+  nulla). Serve a coprire le corse all'avvio: una versione precedente dell'app lanciava
+  un'eccezione ogni 2,5 s finché i dati non arrivavano.
 
 ### Eseguirli senza farsi ingannare dalla cache
 

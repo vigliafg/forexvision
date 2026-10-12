@@ -25,6 +25,7 @@ Uso:
 """
 
 import argparse
+import ipaddress
 import json
 import os
 import re
@@ -436,6 +437,12 @@ class FeedHandler(SimpleHTTPRequestHandler):
     # ------------------------------------------------------------------ GET
     def do_GET(self):
         path = self.path.split("?")[0]
+        # Ritardo artificiale per i test: serve a riprodurre un ponte lento,
+        # cioe' la finestra in cui l'app ha gia' i timer attivi ma non ha
+        # ancora ricevuto la prima serie di prezzi.
+        delay = getattr(self.server, "delay_ms", 0)
+        if delay and path.startswith("/api/"):
+            time.sleep(delay / 1000.0)
         if path == "/api/status":
             return self.api_status()
         if path == "/api/candles":
@@ -560,27 +567,89 @@ class FeedHandler(SimpleHTTPRequestHandler):
 # ---------------------------------------------------------------------------
 # Avvio
 # ---------------------------------------------------------------------------
-def free_port(preferred):
+def free_port(preferred, host="127.0.0.1"):
     for port in [preferred] + list(range(preferred + 1, preferred + 20)):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                sock.bind(("127.0.0.1", port))
+                sock.bind((host, port))
                 return port
             except OSError:
                 continue
     raise SystemExit("nessuna porta libera disponibile")
 
 
+def local_addresses():
+    """Indirizzi IPv4 con cui questa macchina e' raggiungibile dall'esterno.
+
+    Elenca tutte le interfacce configurate (rete locale, Tailscale, ...) tenendo
+    fuori loopback, indirizzi di link-local e reti interne di Docker, che non
+    servono a nessuno per aprire l'app.
+    """
+    found = []
+
+    def useful(ip):
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if addr.is_loopback or addr.is_link_local:
+            return False
+        return addr not in ipaddress.ip_network("172.16.0.0/12")  # reti Docker
+
+    def add(ip):
+        if ip and ip not in found and useful(ip):
+            found.append(ip)
+
+    try:
+        # connessione UDP verso un indirizzo di test: non parte nessun pacchetto,
+        # serve solo a far scegliere al sistema l'indirizzo di uscita principale
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("192.0.2.1", 9))
+            add(sock.getsockname()[0])
+    except OSError:
+        pass
+
+    try:
+        import fcntl
+        import struct
+        for _, name in socket.if_nameindex():
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    request = struct.pack("256s", name.encode()[:15])
+                    # SIOCGIFADDR: indirizzo IPv4 assegnato all'interfaccia
+                    add(socket.inet_ntoa(fcntl.ioctl(sock.fileno(), 0x8915, request)[20:24]))
+            except OSError:
+                continue
+    except (ImportError, OSError, AttributeError):
+        pass
+
+    return found
+
+
 def main():
     parser = argparse.ArgumentParser(description="ForexVision - server dati reali")
     parser.add_argument("--port", type=int, default=int(os.environ.get("FOREXVISION_PORT", DEFAULT_PORT)))
+    parser.add_argument("--host", default=os.environ.get("FOREXVISION_HOST", "127.0.0.1"),
+                        help="indirizzo di ascolto: 127.0.0.1 (solo questa macchina, "
+                             "predefinito) oppure 0.0.0.0 (tutta la rete locale e Tailscale)")
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--test-sink", default=None,
                         help="file dove salvare i report inviati dai test (POST /report)")
+    parser.add_argument("--delay-ms", type=int, default=0,
+                        help="ritarda di N millisecondi le risposte /api/ (serve ai test "
+                             "per riprodurre un ponte lento)")
     args = parser.parse_args()
 
-    port = free_port(args.port)
+    # Le stampe di avvio finiscono in un file di log quando il server gira in
+    # background: senza riga per riga resterebbero nel buffer e lo script di
+    # avvio non potrebbe mostrare gli indirizzi di rete.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
+    port = free_port(args.port, args.host)
     FeedHandler.test_sink = args.test_sink
     if args.test_sink:
         try:
@@ -588,11 +657,22 @@ def main():
         except Exception:
             pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), partial(FeedHandler, directory=ROOT))
+    server = ThreadingHTTPServer((args.host, port), partial(FeedHandler, directory=ROOT))
+    server.delay_ms = max(0, args.delay_ms)
     url = "http://127.0.0.1:%d/index.html" % port
-    print("ForexVision in ascolto su http://127.0.0.1:%d" % port)
+    print("ForexVision in ascolto su http://%s:%d" % (args.host, port))
+    if args.host not in ("127.0.0.1", "localhost"):
+        addresses = local_addresses()
+        if addresses:
+            print("  da questo computer : http://127.0.0.1:%d/index.html" % port)
+            for address in addresses:
+                print("  dalla rete         : http://%s:%d/index.html" % (address, port))
+        print("  attenzione: la porta e' aperta a chi raggiunge questa macchina "
+              "(l'app non chiede password)")
     print("  dati reali : http://127.0.0.1:%d/api/candles?tf=M10&symbol=EUR%%2FUSD" % port)
     print("  stato      : http://127.0.0.1:%d/api/status" % port)
+    if server.delay_ms:
+        print("  test       : risposte /api/ rallentate di %d ms" % server.delay_ms)
     print("  (Ctrl+C per chiudere)")
     if not args.no_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()

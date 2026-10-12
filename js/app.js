@@ -61,6 +61,7 @@
     tooltipEl = $('tooltip');
     chart = new window.ForexChart(chartEl, tooltipEl);
     chart.onHover = function (idx) {
+      if (!state.series) return;
       const c = state.series.candles[idx];
       $('ohlcReadout').textContent =
         'O ' + c.open.toFixed(state.instrument.digits) +
@@ -70,6 +71,7 @@
         '  V ' + fmtInt(c.volume);
     };
     chart.onLeave = function () {
+      if (!state.series) return;
       const c = state.series.candles[state.series.candles.length - 1];
       $('ohlcReadout').textContent =
         'O ' + c.open.toFixed(state.instrument.digits) +
@@ -389,6 +391,9 @@
   function tick() {
     // Con i dati reali i movimenti arrivano dal fornitore: niente rumore finto.
     if (state.source === 'real') return;
+    // il primo giro puo' scattare prima che la serie sia pronta (per esempio
+    // quando il ponte risponde piano): senza dati non c'e' niente da muovere
+    if (!state.series || !state.analysis) return;
 
     const candles = state.series.candles;
     const last = candles[candles.length - 1];
