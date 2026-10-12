@@ -442,6 +442,22 @@ class FeedHandler(SimpleHTTPRequestHandler):
             return self.api_candles()
         return SimpleHTTPRequestHandler.do_GET(self)
 
+    def send_header(self, keyword, value):
+        if keyword.lower() == "cache-control":
+            self.cache_header_sent = True
+        return SimpleHTTPRequestHandler.send_header(self, keyword, value)
+
+    def end_headers(self):
+        # I file dell'app sono in continuo sviluppo: senza questo header il browser
+        # puo' riusare una copia vecchia basandosi sulla sola Last-Modified (la
+        # regola del 10% usata da Firefox), e una suite verde puo' essere stata
+        # eseguita su codice ormai superato. "no-cache" obbliga a rivalidare
+        # (304 se il file non e' cambiato): sempre aggiornati, comunque veloce.
+        if not getattr(self, "cache_header_sent", False):
+            self.send_header("Cache-Control", "no-cache, must-revalidate")
+        self.cache_header_sent = False
+        return SimpleHTTPRequestHandler.end_headers(self)
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""

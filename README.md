@@ -35,7 +35,7 @@ l'app ripiega **da sola** sulla modalità simulata e lo segnala nel badge in alt
 forex/
 ├── index.html            interfaccia (layout a due colonne + registro)
 ├── css/styles.css        tema scuro da terminale di trading
-├── server.py             ponte dati locale: file statici + /api/candles (Yahoo Finance)
+├── server.py             ponte dati locale: file statici (senza cache) + /api/candles (Yahoo Finance)
 ├── js/
 │   ├── data.js           generatore di serie OHLC sintetiche
 │   ├── indicators.js     libreria di indicatori tecnici
@@ -179,7 +179,9 @@ candela resta la vera, con la scritta "ultimo aggiornamento hh:mm:ss".
   la forza di EUR solo contro USD, che non aggiunge informazione indipendente. Quindi
   con i dati reali il verdetto finale si appoggia ad **analisi tecnica e SMC** (la
   scheda lo spiega), mentre il `sentiment` resta disponibile in modalità simulata o con
-  la spunta "includi il contesto simulato".
+  la spunta "includi il contesto simulato". Nel pannello di confluenza i tre studi
+  restano **sempre** in vista: quello che non pesa nel verdetto è marcato «escluso dal
+  verdetto» con il motivo, così nessuno studio sparisce dall'interfaccia.
 - Gli endpoint di Yahoo Finance usati sono **non ufficiali**: possono cambiare o
   rispondere con liste d'attesa (HTTP 429). Il ponte gestisce entrambi i casi ripiegando
   sulla cache o sulla modalità simulata.
@@ -284,6 +286,17 @@ I test girano in un browser e funzionano anche aperti direttamente da `file://`
   report con la sezione "La fonte dei dati", passaggio a GBP/JPY (badge che torna
   simulato) e ritorno a EUR/USD, storia giornaliera di 5 anni dichiarata
   nell'interfaccia, assenza di errori JavaScript.
+
+### Eseguirli senza farsi ingannare dalla cache
+
+Il ponte risponde ai file dell'app con `Cache-Control: no-cache`, quindi una pagina
+ricaricata usa sempre la versione aggiornata; se il file non è cambiato risponde
+`304 Not Modified` e resta veloce. Serve perché senza quell'header il browser può riusare
+una copia vecchia basandosi sulla sola `Last-Modified`: Firefox la considera "fresca" per
+un decimo del tempo passato dall'ultima modifica, cioè anche per parecchi minuti, e una
+suite verde finisce per misurare codice già superato. Negli script di test conviene
+comunque forzare il ricaricamento (in Firefox `Ctrl+Maiusc+R`, oppure un profilo con la
+cache disattivata) o aprire le pagine direttamente da `file://`, che non ha cache.
 
 ## Avvertenza
 
