@@ -25,6 +25,7 @@ Uso:
 """
 
 import argparse
+import email.utils
 import ipaddress
 import json
 import os
@@ -37,6 +38,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
@@ -122,6 +125,73 @@ TF_MAP = {
 }
 
 HOSTS = ("query1.finance.yahoo.com", "query2.finance.yahoo.com")
+
+# ---------------------------------------------------------------------------
+# Sentiment reale: fonti autorevoli.
+#
+#  - CFTC / Commitments of Traders: API ufficiale Socrata del regolatore USA
+#    (publicreporting.cftc.gov, nessuna chiave necessaria). Il report esce una
+#    volta a settimana (dati di martedi', rilascio venerdi'). Per ogni divisa
+#    si usa il contratto futures "legacy" corrispondente.
+#  - VIX (^VIX su Yahoo): l'indice della volatilita' implicita dell'S&P 500,
+#    riferimento standard per il regime risk-on / risk-off.
+#  - Indice del dollaro (DX-Y.NYB su Yahoo): forza del USD misurata dal
+#    mercato reale su un paniere di valute.
+# ---------------------------------------------------------------------------
+CFTC_DATASET = "6dca-aqww"          # COT "Legacy Futures Only" (Socrata)
+COT_CODES = {
+    "EUR": "099741",   # Euro FX (CME)
+    "JPY": "097741",   # Japanese Yen (CME)
+    "GBP": "096742",   # British Pound (CME)
+    "CHF": "092741",   # Swiss Franc (CME)
+    "CAD": "090741",   # Canadian Dollar (CME)
+    "AUD": "232741",   # Australian Dollar (CME)
+    "NZD": "112741",   # New Zealand Dollar (CME)
+    "XAU": "088691",   # Gold (COMEX)
+    "XAG": "084691",   # Silver (COMEX)
+}
+COT_WEEKS = 262                     # ~5 anni di storia, come le candele D1
+COT_TTL = 6 * 3600                  # il report COT e' settimanale: cache lunga
+AUX_TTL = TTL_SECONDS               # VIX/DXY: stessa caduta dei candele
+SENTIMENT_SYMBOLS = {               # simboli ausiliari Yahoo
+    "vix": "^VIX",
+    "dxy": "DX-Y.NYB",
+}
+
+# ---------------------------------------------------------------------------
+# Notizie e calendario: fonti pubblicamente raggiungibili, senza chiavi.
+#
+#  - RSS di ForexLive e FXStreet: notizie di mercato forex (aggregatori);
+#  - RSS ufficiali di Federal Reserve e BCE: comunicati delle banche centrali,
+#    fonti primarie (sempre pertinenti per EUR/USD);
+#  - calendario economico ForexFactory (mirror JSON di faireconomy.media,
+#    dichiaratamente non ufficiale ma di uso comune): eventi con impatto,
+#    previsione e dato precedente.
+#
+# Il browser non puo' contattare queste fonti (CORS): le scarica e ripulisce
+# il ponte, che le ripulisce e le consegna in un JSON compatto con cache di
+# 5 minuti e copia su disco per i guasti di rete.
+# ---------------------------------------------------------------------------
+NEWS_FEEDS = (
+    ("ForexLive", "https://www.forexlive.com/feed/news", "wire"),
+    ("FXStreet", "https://www.fxstreet.com/rss/news", "wire"),
+    ("Federal Reserve", "https://www.federalreserve.gov/feeds/press_all.xml", "bank"),
+    ("BCE", "https://www.ecb.europa.eu/rss/press.html", "bank"),
+)
+NEWS_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+NEWS_TTL = 300                 # cache in memoria: 5 minuti
+NEWS_MAX_ITEMS = 70            # notizie complessive consegnate al client
+NEWS_MAX_PER_FEED = 25
+NEWS_CALENDAR_MAX = 40
+# parole chiave per la pertinenza EUR/USD dei notiziari generalisti
+EURUSD_KEYWORDS = (
+    "eur", "euro", "ecb", "lagarde", "fed", "fomc", "powell", "dollar",
+    "dollaro", "usd", "cpi", "inflation", "inflazione", "nfp", "payroll",
+    "gdp", "rate", "tassi", "tariff", "yields", "bonds", "parity", "parità",
+    "fx", "forex", "currency", "valuta", "eurozone", "germany", "france",
+    "euro area", "boe", "ecb", "bundesbank", "boj", "boj", "snb", "boc",
+    "rba", "rnz", "draghi", "merz", "government shutdown", "debt",
+)
 
 
 class FeedError(Exception):
@@ -291,6 +361,381 @@ def group_candles(candles, group, minutes):
     return merged
 
 
+# ---------------------------------------------------------------------------
+# Sentiment reale: scaricamento e cache
+# ---------------------------------------------------------------------------
+def _http_json_retry(url, errors):
+    """Prova le intestazioni candidate e restituisce il JSON, o raccoglie errori."""
+    uas = (_working_ua[0],) + tuple(u for u in UA_CANDIDATES if u != _working_ua[0])
+    for ua in uas:
+        _pace()
+        try:
+            return _http_json(url, ua), ua
+        except urllib.error.HTTPError as exc:
+            errors.append("%s: HTTP %s" % (ua[:24], exc.code))
+        except Exception as exc:                       # rete, timeout, DNS...
+            errors.append("%s: %s" % (ua[:24], exc))
+    raise FeedError("; ".join(errors[:3]) if errors else "fonte non raggiungibile")
+
+
+def fetch_cot(force=False):
+    """Scarica lo storico COT (CFTC) dei contratti valute e metalli.
+
+    Unica richiesta per tutti i contratti: il report esce una volta a
+    settimana, quindi la cache dura 6 ore. A fonte irraggiungibile si serve
+    l'ultima copia su disco marcandola "stale".
+    """
+    key = "cot"
+    with CACHE_LOCK:
+        entry = CACHE.get(key)
+        if entry and not force and time.time() - entry["fetched_at"] < COT_TTL:
+            payload = dict(entry["payload"])
+            payload["fromCache"] = True
+            payload["cacheAgeSeconds"] = round(time.time() - entry["fetched_at"], 1)
+            return payload
+
+    codes = list(COT_CODES.values())
+    query = (
+        "select report_date_as_yyyy_mm_dd, cftc_contract_market_code, "
+        "noncomm_positions_long_all, noncomm_positions_short_all, "
+        "comm_positions_long_all, comm_positions_short_all, open_interest_all "
+        "where cftc_contract_market_code in (%s) "
+        "order by report_date_as_yyyy_mm_dd desc limit %d"
+        % (",".join("'%s'" % c for c in codes), len(codes) * (COT_WEEKS + 12))
+    )
+    url = ("https://publicreporting.cftc.gov/resource/%s.json?$query=%s"
+           % (CFTC_DATASET, urllib.parse.quote(query)))
+    try:
+        rows, _ua = _http_json_retry(url, [])
+        if not isinstance(rows, list):
+            raise FeedError("risposta inattesa dalla CFTC")
+        by_code = {}
+        for row in rows:
+            code = row.get("cftc_contract_market_code")
+            try:
+                rec = {
+                    "t": _cot_stamp(row["report_date_as_yyyy_mm_dd"]),
+                    "nl": int(row["noncomm_positions_long_all"]),
+                    "ns": int(row["noncomm_positions_short_all"]),
+                    "cl": int(row["comm_positions_long_all"]),
+                    "cs": int(row["comm_positions_short_all"]),
+                    "oi": int(row["open_interest_all"]),
+                }
+            except (KeyError, ValueError, TypeError):
+                continue
+            by_code.setdefault(code, []).append(rec)
+
+        contracts = {}
+        latest = ""
+        for cur, code in COT_CODES.items():
+            hist = by_code.get(code) or []
+            if len(hist) < 52:
+                raise FeedError("storico COT insufficiente per %s (%d settimane)"
+                                % (cur, len(hist)))
+            hist.sort(key=lambda r: r["t"])
+            hist = hist[-COT_WEEKS:]
+            contracts[cur] = {"code": code, "rows": hist}
+            stamp = hist[-1]["t"]
+            date_txt = time.strftime("%Y-%m-%d", time.gmtime(stamp / 1000))
+            if date_txt > latest:
+                latest = date_txt
+
+        payload = {
+            "ok": True,
+            "source": "cftc-cot",
+            "provider": "CFTC - Commitments of Traders",
+            "providerUrl": "https://publicreporting.cftc.gov/",
+            "asOf": latest,
+            "weeks": min(len(c["rows"]) for c in contracts.values()),
+            "contracts": contracts,
+            "fetchedAt": int(time.time() * 1000),
+            "stale": False,
+        }
+    except Exception as exc:
+        stale = load_disk_cache("sent_" + key)
+        if stale and stale.get("ok"):
+            stale = dict(stale)
+            stale.update({"fromCache": True, "stale": True, "error": str(exc)})
+            return stale
+        raise
+
+    with CACHE_LOCK:
+        CACHE[key] = {"fetched_at": time.time(), "payload": payload}
+    save_disk_cache("sent_" + key, payload)
+    return payload
+
+
+def _cot_stamp(date_text):
+    """'2026-10-06T00:00:00.000' -> millisecondi Unix (UTC)."""
+    import calendar
+    y = int(date_text[:4]); m = int(date_text[5:7]); d = int(date_text[8:10])
+    return calendar.timegm((y, m, d, 0, 0, 0)) * 1000
+
+
+def fetch_close_series(slot, force=False):
+    """Serie giornaliera di chiusura per VIX o indice del dollaro (Yahoo)."""
+    key = "sent_" + slot
+    sym = SENTIMENT_SYMBOLS[slot]
+    with CACHE_LOCK:
+        entry = CACHE.get(key)
+        if entry and not force:
+            age = time.time() - entry["fetched_at"]
+            payload0 = entry["payload"]
+            market_closed = _market_closed(payload0)
+            ttl = 6 * 3600 if market_closed else AUX_TTL
+            if age < ttl:
+                payload = dict(payload0)
+                payload["fromCache"] = True
+                payload["cacheAgeSeconds"] = round(age, 1)
+                return payload
+
+    try:
+        result, _host = yahoo_download(sym, "1d", "1y")
+        candles, _skipped = candles_from_yahoo(result, 2)
+        if len(candles) < 60:
+            raise FeedError("serie insufficiente da Yahoo (%s: %d barre)"
+                            % (sym, len(candles)))
+        closes = [{"time": c["time"], "close": c["close"]} for c in candles[-400:]]
+        payload = {
+            "ok": True,
+            "symbol": sym,
+            "provider": "Yahoo Finance",
+            "candles": closes,
+            "level": closes[-1]["close"],
+            "asOf": time.strftime("%Y-%m-%d", time.gmtime(closes[-1]["time"] / 1000)),
+            "lastBarTime": closes[-1]["time"],
+            "stale": False,
+        }
+    except Exception as exc:
+        stale = load_disk_cache(key)
+        if stale and stale.get("ok"):
+            stale = dict(stale)
+            stale.update({"fromCache": True, "stale": True, "error": str(exc)})
+            return stale
+        raise
+
+    with CACHE_LOCK:
+        CACHE[key] = {"fetched_at": time.time(), "payload": payload}
+    save_disk_cache(key, payload)
+    return payload
+
+
+def _market_closed(payload):
+    last_bar = (payload or {}).get("lastBarTime")
+    return bool(last_bar and time.time() * 1000 - last_bar > 12 * 3600 * 1000)
+
+
+def build_sentiment_payload(symbol, force=False):
+    """Costruisce la risposta per /api/sentiment (posizionamento COT + VIX + DXY)."""
+    yahoo_symbol = REAL_PAIRS.get(symbol)
+    if yahoo_symbol is None:
+        raise FeedError("strumento non collegato ai dati reali: %s" % symbol)
+
+    # il COT e' indispensabile: senza, il sentiment reale non esiste
+    cot = fetch_cot(force)
+    if not cot.get("ok"):
+        raise FeedError("report CFTC non disponibile")
+
+    # VIX e DXY arricchiscono il quadro: se mancano, il client calcola
+    # il punteggio con le sole fonti presenti
+    try:
+        vix = fetch_close_series("vix", force)
+    except Exception as exc:                       # pragma: no cover - rete
+        vix = {"ok": False, "error": str(exc)}
+    try:
+        dxy = fetch_close_series("dxy", force)
+    except Exception as exc:                       # pragma: no cover - rete
+        dxy = {"ok": False, "error": str(exc)}
+
+    return {
+        "ok": True,
+        "source": "cftc-cot+yahoo",
+        "provider": "CFTC (Commitments of Traders) + Yahoo Finance",
+        "symbol": symbol,
+        "yahooSymbol": yahoo_symbol,
+        "cot": cot,
+        "vix": vix,
+        "dxy": dxy,
+        "fetchedAt": int(time.time() * 1000),
+        "stale": bool(cot.get("stale") or vix.get("stale") or dxy.get("stale")),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Notizie e calendario: scaricamento, ripulitura e cache
+# ---------------------------------------------------------------------------
+def _rss_time_to_ms(date_text):
+    """pubDate RSS (RFC 822 o ISO) -> millisecondi Unix."""
+    text = (date_text or "").strip()
+    if not text:
+        return None
+    try:
+        dt = email.utils.parsedate_to_datetime(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp() * 1000
+    except (TypeError, ValueError, IndexError):
+        pass
+    try:                                 # ISO con offset ("-04:00")
+        clean = text[:-1] + "+00:00" if text.endswith("Z") else text
+        dt = datetime.fromisoformat(clean)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp() * 1000
+    except (ValueError, TypeError):
+        return None
+
+
+def _clean_title(text):
+    """Toglie tag HTML residui e spazi di troppo dai titoli dei RSS."""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", (text or ""))).strip()
+
+
+def _fetch_rss_feed(name, url):
+    """Scarica e ripulisce un RSS: lista di {time, title, link}."""
+    _pace()
+    req = urllib.request.Request(url, headers={
+        "User-Agent": _working_ua[0],
+        "Accept": "application/rss+xml,application/xml,text/xml,*/*",
+    })
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+        raw = resp.read(800000)
+    root = ET.fromstring(raw)
+    out = []
+    for item in root.iter("item"):
+        if len(out) >= NEWS_MAX_PER_FEED:
+            break
+        title = _clean_title(item.findtext("title"))
+        if not title:
+            continue
+        ts = _rss_time_to_ms(item.findtext("pubDate") or "")
+        if ts is None:
+            continue
+        out.append({
+            "time": int(ts),
+            "title": title,
+            "link": (item.findtext("link") or "").strip(),
+        })
+    return out
+
+
+def _fetch_calendar():
+    """Calendario economico ForexFactory (mirror JSON) ripulito e filtrato.
+
+    Restano gli eventi pertinenti a EUR/USD: divise EUR/USD/ALL con impatto
+    medio o alto, di qualunque divisa con impatto alto.
+    """
+    _pace()
+    req = urllib.request.Request(NEWS_CALENDAR_URL, headers={
+        "User-Agent": _working_ua[0],
+        "Accept": "application/json,text/plain,*/*",
+    })
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+        data = json.loads(resp.read(600000).decode("utf-8", "replace"))
+    out = []
+    for ev in data:
+        ts = _rss_time_to_ms(ev.get("date") or "")
+        impact = ev.get("impact") or ""
+        country = ev.get("country") or ""
+        relevant = (
+            (country in ("EUR", "USD", "ALL") and impact in ("High", "Medium"))
+            or (impact == "High")
+        )
+        if ts is None or not relevant:
+            continue
+        out.append({
+            "time": int(ts),
+            "country": country,
+            "impact": impact,
+            "title": _clean_title(ev.get("title")),
+            "forecast": ev.get("forecast") or "",
+            "previous": ev.get("previous") or "",
+        })
+    out.sort(key=lambda e: e["time"])
+    return out[:NEWS_CALENDAR_MAX]
+
+
+def build_news_payload(force=False):
+    """Costruisce la risposta per /api/news (con cache di 5 minuti)."""
+    key = "news"
+    with CACHE_LOCK:
+        entry = CACHE.get(key)
+        if entry and not force and time.time() - entry["fetched_at"] < NEWS_TTL:
+            payload = dict(entry["payload"])
+            payload["fromCache"] = True
+            payload["cacheAgeSeconds"] = round(time.time() - entry["fetched_at"], 1)
+            return payload
+
+    feeds_status = []
+    news = []
+    errors = []
+    news_lower_seen = set()
+    for name, url, kind in NEWS_FEEDS:
+        try:
+            items = _fetch_rss_feed(name, url)
+        except Exception as exc:          # fonte fuori servizio: le altre bastano
+            errors.append("%s: %s" % (name, exc))
+            feeds_status.append({"name": name, "ok": False, "items": 0})
+            continue
+        feeds_status.append({"name": name, "ok": True, "items": len(items)})
+        for it in items:
+            title_l = it["title"].lower()
+            dedup = title_l[:70]
+            if dedup in news_lower_seen:
+                continue
+            news_lower_seen.add(dedup)
+            # le comunicati di banche centrali sono sempre pertinenti; per i
+            # notiziari la pertinenza EUR/USD si marca per parole chiave
+            relevant = kind == "bank" or any(k in title_l for k in EURUSD_KEYWORDS)
+            news.append({
+                "time": it["time"], "source": name, "kind": kind,
+                "title": it["title"], "link": it["link"], "eurusd": relevant,
+            })
+
+    try:
+        calendar = _fetch_calendar()
+        feeds_status.append({"name": "Calendario", "ok": True,
+                             "items": len(calendar)})
+    except Exception as exc:
+        errors.append("calendario: %s" % exc)
+        feeds_status.append({"name": "Calendario", "ok": False, "items": 0})
+        calendar = []
+
+    news.sort(key=lambda n: n["time"], reverse=True)
+    news = news[:NEWS_MAX_ITEMS]
+
+    if not news and not calendar:
+        # nessuna fonte risponde: si prova a servire l'ultima copia su disco
+        stale = load_disk_cache("news")
+        if stale and stale.get("ok"):
+            stale = dict(stale)
+            stale.update({
+                "fromCache": True, "stale": True,
+                "cacheAgeSeconds": round(time.time() - stale.get("fetchedAt", 0) / 1000, 1),
+                "error": "; ".join(errors[:3]),
+            })
+            return stale
+        raise FeedError("; ".join(errors[:3]) if errors else "nessuna fonte notizie raggiungibile")
+
+    ok_feeds = sum(1 for f in feeds_status if f["ok"])
+    payload = {
+        "ok": True,
+        "source": "rss+calendar",
+        "provider": "ForexLive - FXStreet - Federal Reserve - BCE - ForexFactory (faireconomy.media)",
+        "feeds": feeds_status,
+        "sourcesOk": ok_feeds,
+        "news": news,
+        "calendar": calendar,
+        "fetchedAt": int(time.time() * 1000),
+        "stale": False,
+    }
+
+    with CACHE_LOCK:
+        CACHE[key] = {"fetched_at": time.time(), "payload": payload}
+    save_disk_cache("news", payload)
+    return payload
+
+
 def build_payload(symbol, tf, force=False):
     """Costruisce la risposta per /api/candles (con cache)."""
     spec = TF_MAP.get(tf)
@@ -447,6 +892,10 @@ class FeedHandler(SimpleHTTPRequestHandler):
             return self.api_status()
         if path == "/api/candles":
             return self.api_candles()
+        if path == "/api/sentiment":
+            return self.api_sentiment()
+        if path == "/api/news":
+            return self.api_news()
         return SimpleHTTPRequestHandler.do_GET(self)
 
     def send_header(self, keyword, value):
@@ -537,6 +986,18 @@ class FeedHandler(SimpleHTTPRequestHandler):
                            for tf, s in TF_MAP.items()},
             "ttlSeconds": TTL_SECONDS,
             "maxBars": MAX_BARS,
+            "sentiment": {
+                "endpoint": "/api/sentiment",
+                "sources": ["CFTC Commitments of Traders (COT)", "Yahoo ^VIX", "Yahoo DX-Y.NYB (indice del dollaro)"],
+                "cotWeeks": COT_WEEKS,
+                "cotContracts": sorted(COT_CODES.keys()),
+            },
+            "news": {
+                "endpoint": "/api/news",
+                "rss": [f[0] for f in NEWS_FEEDS],
+                "calendar": "ForexFactory (faireconomy.media, mirror non ufficiale)",
+                "ttlSeconds": NEWS_TTL,
+            },
             "cache": cache_state,
             "serverTime": int(time.time() * 1000),
         })
@@ -557,6 +1018,32 @@ class FeedHandler(SimpleHTTPRequestHandler):
                 "ok": False, "error": "errore interno: %s" % exc,
                 "symbol": symbol, "timeframe": tf,
             }, status=500)
+        self._send_json(payload)
+
+    def api_sentiment(self):
+        q = self._query()
+        symbol = q.get("symbol") or DEFAULT_SYMBOL
+        force = q.get("force") in ("1", "true", "yes")
+        try:
+            payload = build_sentiment_payload(symbol, force=force)
+        except FeedError as exc:
+            return self._send_json({
+                "ok": False, "error": str(exc), "symbol": symbol,
+            }, status=503)
+        except Exception as exc:                      # pragma: no cover
+            return self._send_json({
+                "ok": False, "error": "errore interno: %s" % exc, "symbol": symbol,
+            }, status=500)
+        self._send_json(payload)
+
+    def api_news(self):
+        force = self._query().get("force") in ("1", "true", "yes")
+        try:
+            payload = build_news_payload(force=force)
+        except FeedError as exc:
+            return self._send_json({"ok": False, "error": str(exc)}, status=503)
+        except Exception as exc:                      # pragma: no cover
+            return self._send_json({"ok": False, "error": "errore interno: %s" % exc}, status=500)
         self._send_json(payload)
 
     def log_message(self, fmt, *args):

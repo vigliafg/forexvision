@@ -168,10 +168,12 @@
     return out;
   }
 
-  /** ADX semplificato (forza del trend, 0-100). */
+  /** ADX di Wilder (forza del trend, 0-100). */
   function adx(highs, lows, closes, period) {
     period = period || 14;
     const n = closes.length;
+    const out = new Array(n).fill(null);
+    if (n < period * 2 + 1) return out;
     const plusDM = new Array(n).fill(0);
     const minusDM = new Array(n).fill(0);
     const tr = new Array(n).fill(0);
@@ -182,9 +184,21 @@
       minusDM[i] = (dn > up && dn > 0) ? dn : 0;
       tr[i] = Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1]));
     }
-    const smoothPlus = ema(plusDM, period);
-    const smoothMinus = ema(minusDM, period);
-    const smoothTr = ema(tr, period);
+    // Smoothing di Wilder: primo valore = media dei primi `period` incrementi,
+    // poi ricorsione arr[i] = arr[i-1] - arr[i-1]/period + nuovo.
+    function wilder(values, firstIdx, p) {
+      const arr = new Array(values.length).fill(null);
+      let sum = 0;
+      for (let i = firstIdx; i < firstIdx + p; i++) sum += values[i];
+      arr[firstIdx + p - 1] = sum / p;
+      for (let i = firstIdx + p; i < values.length; i++) {
+        arr[i] = arr[i - 1] - arr[i - 1] / p + values[i];
+      }
+      return arr;
+    }
+    const smoothPlus = wilder(plusDM, 1, period);
+    const smoothMinus = wilder(minusDM, 1, period);
+    const smoothTr = wilder(tr, 1, period);
     const dx = new Array(n).fill(null);
     for (let i = 0; i < n; i++) {
       if (smoothTr[i] == null || smoothTr[i] === 0) continue;
@@ -193,13 +207,16 @@
       const sum = pdi + mdi;
       dx[i] = sum === 0 ? 0 : 100 * Math.abs(pdi - mdi) / sum;
     }
-    const first = dx.findIndex(function (v) { return v != null; });
-    const adxLine = new Array(n).fill(null);
-    if (first !== -1) {
-      const dense = ema(dx.slice(first).map(function (v) { return v == null ? 0 : v; }), period);
-      for (let i = 0; i < dense.length; i++) if (dense[i] != null) adxLine[first + i] = dense[i];
+    // ADX di Wilder: primo valore = media dei primi `period` DX, poi ricorsione.
+    const first = 2 * period - 1;             // primo indice con DX definito
+    if (first + period - 1 >= n) return out;
+    let dxSum = 0;
+    for (let i = first - period + 1; i <= first; i++) dxSum += dx[i];
+    out[first] = dxSum / period;
+    for (let i = first + 1; i < n; i++) {
+      out[i] = (out[i - 1] * (period - 1) + dx[i]) / period;
     }
-    return adxLine;
+    return out;
   }
 
   /** Calcola l'intero set di indicatori su una serie di candele. */

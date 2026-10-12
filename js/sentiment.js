@@ -158,9 +158,9 @@
       extremeText: extreme === 'long' ? 'folla sbilanciata al rialzo'
         : extreme === 'short' ? 'folla sbilanciata al ribasso' : 'posizionamento equilibrato',
       contrarianScore: contrarianScore,
-      contrarianText: contrarianScore < -0.4 ? 'segnale contro-ario ribassista (squeeze possibile)'
-        : contrarianScore > 0.4 ? 'segnale contro-ario rialzista (squeeze possibile)'
-          : 'nessuna lettura contro-aria significativa',
+      contrarianText: contrarianScore < -0.4 ? 'segnale contrario ribassista (squeeze possibile)'
+        : contrarianScore > 0.4 ? 'segnale contrario rialzista (squeeze possibile)'
+          : 'nessuna lettura contraria significativa',
       simulated: true
     };
   }
@@ -235,6 +235,295 @@
     const byCurrency = {};
     list.forEach(function (x) { byCurrency[x.currency] = x; });
     return { list: list, byCurrency: byCurrency, crowded: list[0], lightest: list[list.length - 1] };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Analisi di sentiment REALE (CFTC COT + VIX + indice del dollaro)     */
+  /* ------------------------------------------------------------------ */
+  /**
+   * Sentiment della coppia costruito su fonti autorevoli reali:
+   *   - posizionamento non-commerciale del report CFTC (COT), per percentile
+   *     sulla storia di ~5 anni, con variazione settimanale (flussi);
+   *   - regime risk-on/risk-off dal VIX reale (livello vs distribuzione annua);
+   *   - forza del dollaro dall'indice DXY reale (per la gamba USD);
+   *   - momentum della coppia dalle candele reali (EUR/USD).
+   *
+   * Il posizionamento retail resta un modello simulato dichiarato ed e'
+   * MOSTRATO ma ESCLUSO dal punteggio. Restituisce un oggetto con la stessa
+   * interfaccia di analyze(): pannelli e report non cambiano struttura.
+   */
+  function analyzeReal(payload, candles, instrument, opts) {
+    opts = opts || {};
+    const symbol = opts.symbol || (payload && payload.symbol) || 'EUR/USD';
+    const pair = parsePair(symbol);
+    const last = candles.length - 1;
+    const closes = candles.map(function (c) { return c.close; });
+    const ind = opts.indicators || (global.Indicators ? global.Indicators.computeAll(candles) : null);
+    const atr = ind && isNum(ind.atr[last]) ? ind.atr[last] : Math.abs(closes[last]) * 0.005;
+
+    const cot = payload.cot;
+    const sources = ['CFTC - Commitments of Traders (COT)'];
+    if (payload.vix) sources.push('VIX');
+    if (payload.dxy) sources.push('Indice del dollaro (DXY)');
+
+    /* --- percentile del posizionamento netto non-commerciale --- */
+    // netto = (long - short) / open interest, in % dell'open interest
+    function netPercentile(cur) {
+      const def = COT_CODES_POS[cur];
+      const rows = def ? ((cot.contracts[cur] || {}).rows || []) : null;
+      if (!rows || rows.length < 52) return null;
+      const series = rows.map(function (r) { return (r.nl - r.ns) / r.oi * 100; });
+      const value = series[series.length - 1];
+      let below = 0;
+      for (let i = 0; i < series.length; i++) if (series[i] <= value) below++;
+      const prev = series.length > 1 ? series[series.length - 2] : value;
+      return {
+        currency: cur, net: value, score: below / series.length * 100,
+        change: value - prev, contractsNet: rows[rows.length - 1].nl - rows[rows.length - 1].ns,
+        oi: rows[rows.length - 1].oi, asOf: cot.asOf, basis: 'COT'
+      };
+    }
+    // USD non ha un contratto futures: si usa l'indice del dollaro reale
+    function usdFromDxy() {
+      if (!payload.dxy || !payload.dxy.candles || payload.dxy.candles.length < 60) return null;
+      const dc = payload.dxy.candles.map(function (c) { return c.close; });
+      const roc20 = (dc[dc.length - 1] - dc[dc.length - 21]) / dc[dc.length - 21] * 100;
+      const hist = [];
+      for (let i = 20; i < dc.length; i++) hist.push((dc[i] - dc[i - 20]) / dc[i - 20] * 100);
+      const value = hist[hist.length - 1];
+      let below = 0;
+      for (let i = 0; i < hist.length; i++) if (hist[i] <= value) below++;
+      const prev = hist.length > 1 ? hist[hist.length - 2] : value;
+      return { currency: 'USD', net: value, score: below / hist.length * 100,
+               change: value - prev, asOf: payload.dxy.asOf, basis: 'DXY' };
+    }
+
+    const COT_CODES_POS = { EUR: 1, JPY: 1, GBP: 1, CHF: 1, CAD: 1, AUD: 1, NZD: 1, XAU: 1, XAG: 1 };
+    const basePos = pair.base === 'USD' ? usdFromDxy() : netPercentile(pair.base);
+    const quotePos = pair.quote === 'USD' ? usdFromDxy() : netPercentile(pair.quote);
+
+    /* --- forza relativa (pannello classifica): tutti reali --- */
+    const list = [];
+    ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'CAD', 'NZD', 'XAU', 'XAG'].forEach(function (cur) {
+      if (cur === 'USD') {
+        const d = usdFromDxy();
+        if (d) { d.short = d.change; d.rank = 0; list.push(d); }
+        return;
+      }
+      const p = netPercentile(cur);
+      if (p) { p.short = p.change; p.rank = 0; list.push(p); }
+    });
+    list.sort(function (a, b) { return b.score - a.score; });
+    list.forEach(function (x, i) { x.rank = i + 1; });
+    const byCurrency = {};
+    list.forEach(function (x) { byCurrency[x.currency] = x; });
+    const strength = { list: list, byCurrency: byCurrency, basis: 'posizionamento reale' };
+
+    /* --- regime di rischio dal VIX reale --- */
+    let risk = null;
+    if (payload.vix && payload.vix.candles && payload.vix.candles.length >= 60) {
+      const vc = payload.vix.candles.map(function (c) { return c.close; });
+      const level = vc[vc.length - 1];
+      let below = 0;
+      for (let i = 0; i < vc.length; i++) if (vc[i] <= level) below++;
+      const fearPct = below / vc.length * 100;          // 0 = paura minima storica
+      let acc = 0, cnt = 0;
+      for (let i = Math.max(0, vc.length - 50); i < vc.length; i++) { acc += vc[i]; cnt++; }
+      const avg = acc / cnt;
+      const volRatio = avg > 0 ? level / avg : 1;
+      const score = clamp(100 - fearPct, 0, 100);        // alto = risk-on
+      // sotto-pannelli del regime: medie dei percentile di posizionamento
+      // (dati COT reali, stessa convenzione del pannello simulato)
+      function avgPos(names) {
+        const vals = names.map(function (n) {
+          return listByCur[n] ? listByCur[n].score : 50;
+        });
+        return vals.reduce(function (a, b) { return a + b; }, 0) / vals.length;
+      }
+      const listByCur = {};
+      list.forEach(function (x) { listByCur[x.currency] = x; });
+      risk = {
+        score: score,
+        label: score >= 62 ? 'Risk-on' : score <= 38 ? 'Risk-off' : 'Neutro',
+        vix: level, vixPercentile: fearPct,
+        volIndex: clamp(fearPct, 0, 100),
+        volRatio: volRatio,
+        volLabel: volRatio >= 1.25 ? 'elevata' : volRatio <= 0.85 ? 'compressa' : 'nella norma',
+        riskCurrencies: avgPos(['AUD', 'NZD', 'CAD', 'XAG']),
+        havens: avgPos(['JPY', 'CHF', 'XAU']),
+        asOf: payload.vix.asOf,
+        text: score >= 62 ? 'Il VIX e\u0300 basso rispetto alla sua distribuzione annua: gli investitori accettano il rischio.'
+          : score <= 38 ? 'Il VIX e\u0300 alto rispetto alla sua distribuzione annua: prevalenza della prudenza e della protezione.'
+            : 'Il VIX e\u0300 nella parte centrale della sua distribuzione annua: nessun regime estremo.'
+      };
+    }
+
+    /* --- componenti del punteggio (tutte reali) --- */
+    const components = [];
+    function addComp(key, label, score, weight, detail, bull, bear) {
+      if (score == null || !isFinite(score)) return;
+      components.push({ key: key, label: label, score: clamp(score, -1, 1),
+        weight: weight, detail: detail, bull: bull, bear: bear });
+    }
+
+    // 1. posizionamento COT: base vs quote (quote USD = indice del dollaro)
+    let cotScore = null, cotDetail = 'COT non disponibile per le divise della coppia';
+    if (basePos && quotePos) {
+      cotScore = (basePos.score - quotePos.score) / 100;
+      cotDetail = pair.base + ' al percentile ' + basePos.score.toFixed(0) + ' (netto ' +
+        basePos.net.toFixed(1) + '% dell\u2019open interest) vs ' + pair.quote +
+        ' (' + quotePos.basis + ') al percentile ' + quotePos.score.toFixed(0) +
+        ' \u2014 report del ' + cot.asOf;
+    } else if (basePos) {
+      cotScore = (basePos.score - 50) / 100 * 0.7;   // solo la gamba base: soppesata
+      cotDetail = pair.base + ' al percentile ' + basePos.score.toFixed(0) +
+        ' del posizionamento non-commerciale (netto ' + basePos.net.toFixed(1) +
+        '% dell\u2019open interest, ' + basePos.contractsNet + ' contratti) \u2014 report del ' + basePos.asOf;
+    }
+    addComp('cot', 'Posizionamento CFTC (COT)', cotScore, 0.35, cotDetail,
+      'Gli operatori finanziari sono schierati in misura minore del solito contro ' + pair.base,
+      'Gli operatori finanziari sono molto corti su ' + pair.base);
+
+    // 2. flussi: variazione settimanale del posizionamento netto
+    let flowScore = null, flowDetail = 'nessuna variazione settimanale calcolabile';
+    if (basePos && isFinite(basePos.change)) {
+      flowScore = clamp(basePos.change / 8, -1, 1);
+      flowDetail = 'netto non-commerciale di ' + pair.base + (basePos.change >= 0 ? ' aumentato' : ' ridotto') +
+        ' di ' + Math.abs(basePos.change).toFixed(1) + ' punti percentuali nella settimana COT del ' + cot.asOf;
+    }
+    addComp('flow', 'Flussi settimanali COT', flowScore, 0.15, flowDetail,
+      'Gli istituzionali stanno aumentando le posizioni lunghe su ' + pair.base,
+      'Gli istituzionali stanno riducendo le posizioni lunghe su ' + pair.base);
+
+    // 3. momentum della coppia dalle candele reali
+    let momScore = null, momDetail = 'candele non sufficienti';
+    if (closes.length > 60 && atr > 0) {
+      const roc = function (w) { return (closes[last] - closes[last - w]) / closes[last - w]; };
+      const unit = atr / closes[last];
+      momScore = (roc(5) / (unit * 3)) * 0.6 + (roc(20) / (unit * 8)) * 0.4;
+      momDetail = 'prezzo reale: ' + (roc(5) * 100).toFixed(2) + '% su 5 barre e ' +
+        (roc(20) * 100).toFixed(2) + '% su 20 barre (normalizzato su ATR)';
+    }
+    addComp('momentum', 'Momentum del prezzo (reale)', momScore, 0.30, momDetail,
+      'Il prezzo della coppia sta salendo con slancio',
+      'Il prezzo della coppia sta scendendo con slancio');
+
+    // 4. regime di rischio dal VIX reale
+    let riskScore = null, riskDetail = 'VIX non disponibile';
+    if (risk) {
+      const aBase = RISK_AFFINITY[pair.base] || 0;
+      const aQuote = RISK_AFFINITY[pair.quote] || 0;
+      riskScore = clamp((aBase - aQuote) * ((risk.score - 50) / 50), -1, 1);
+      riskDetail = 'VIX ' + risk.vix.toFixed(1) + ' (percentile annuo ' +
+        risk.vixPercentile.toFixed(0) + ', dato del ' + risk.asOf + '): regime ' + risk.label;
+    }
+    addComp('risk', 'Regime di rischio (VIX)', riskScore, 0.20, riskDetail,
+      'Ambiente risk-on favorevole alle divise pro-cicliche',
+      'Ambiente risk-off a favore dei rifugi');
+
+    let wSum = 0, total = 0, concordance = 0;
+    components.forEach(function (c) {
+      wSum += c.weight;
+      total += c.score * c.weight;
+      concordance += Math.sign(c.score) * c.weight;
+    });
+    if (wSum === 0) wSum = 1;
+    total /= wSum;
+    concordance /= wSum;
+    const score = clamp(total, -1, 1);
+    const agreement = Math.abs(concordance);
+
+    const bias = score > 0.35 ? 'FORTE RIALZO' : score > 0.12 ? 'RIALZO'
+      : score < -0.35 ? 'FORTE RIBASSO' : score < -0.12 ? 'RIBASSO' : 'NEUTRO';
+    const direction = score > 0.12 ? 'BUY' : score < -0.12 ? 'SELL' : 'NEUTRAL';
+    const confidence = clamp(0.5 * Math.abs(score) + 0.3 * agreement + 0.25 * (components.length / 4) + 0.05, 0.05, 0.95);
+
+    /* --- pannello retail: resta simulato, dichiarato, fuori dal punteggio --- */
+    const retail = retailPositioning(symbol, candles);
+    if (retail) retail.excludedFromScore = true;
+
+    /* --- pannello istituzionale: dati COT reali --- */
+    const instList = list.filter(function (x) { return x.basis === 'COT'; })
+      .map(function (x) {
+        return {
+          currency: x.currency,
+          net: x.score,                  // percentile 0-100 del posizionamento
+          netPct: x.net,                 // netto vero, % dell'open interest
+          contractsNet: x.contractsNet,
+          change: x.change,
+          extreme: x.score >= 78 ? 'long' : x.score <= 22 ? 'short' : null,
+          simulated: false
+        };
+      }).sort(function (a, b) { return b.net - a.net; });
+    const instByCurrency = {};
+    instList.forEach(function (x) { instByCurrency[x.currency] = x; });
+    const institutional = {
+      list: instList, byCurrency: instByCurrency,
+      crowded: instList[0] || null,
+      lightest: instList[instList.length - 1] || null,
+      basis: 'CFTC COT', asOf: cot.asOf, simulated: false
+    };
+
+    /* --- narrazione --- */
+    const reasons = [];
+    reasons.push({
+      tone: direction === 'BUY' ? 'bull' : direction === 'SELL' ? 'bear' : 'flat',
+      text: 'Sentiment calcolato su dati reali (' + sources.join(', ') + ')' +
+        (cot.asOf ? ', COT del ' + cot.asOf : '') + ': lettura ' + bias.toLowerCase() + '.'
+    });
+    if (basePos) {
+      reasons.push({
+        tone: basePos.score >= 65 ? 'bull' : basePos.score <= 35 ? 'bear' : 'flat',
+        text: pair.base + ': posizionamento non-commerciale ' + (basePos.contractsNet >= 0 ? 'lungo' : 'corto') +
+          ' di ' + Math.abs(basePos.contractsNet).toLocaleString('it-IT') + ' contratti (' +
+          basePos.net.toFixed(1) + '% dell\u2019open interest), percentile storico a 5 anni ' +
+          basePos.score.toFixed(0) + '/100.'
+      });
+    }
+    if (quotePos) {
+      reasons.push({
+        tone: quotePos.score >= 65 ? 'bull' : quotePos.score <= 35 ? 'bear' : 'flat',
+        text: pair.quote + ' (' + quotePos.basis + '): al percentile ' + quotePos.score.toFixed(0) +
+          ' della sua misura di posizionamento/forza, variazione settimanale ' +
+          (quotePos.change >= 0 ? '+' : '') + quotePos.change.toFixed(1) + '.'
+      });
+    }
+    if (risk) {
+      reasons.push({
+        tone: risk.score >= 62 ? 'bull' : risk.score <= 38 ? 'bear' : 'flat',
+        text: 'Regime di rischio da VIX reale: ' + risk.label + ' (' + risk.vix.toFixed(1) +
+          ', percentile ' + risk.vixPercentile.toFixed(0) + ' su 1 anno). ' + risk.text
+      });
+    }
+    if (retail) {
+      reasons.push({
+        tone: 'flat',
+        text: 'Il posizionamento retail resta un modello simulato dichiarato (' +
+          retail.longPct.toFixed(0) + '% long) ed e\u0300 escluso da questo punteggio.'
+      });
+    }
+
+    return {
+      symbol: symbol,
+      pair: pair,
+      real: true,
+      sources: sources,
+      scope: {
+        realPairs: 1, simulatedPairs: 13, partial: true,
+        realSentiment: true, cotAsOf: cot.asOf
+      },
+      strength: strength,
+      retail: retail,
+      risk: risk,
+      institutional: institutional,
+      components: components,
+      score: score,
+      agreement: agreement,
+      bias: bias,
+      direction: direction,
+      confidence: confidence,
+      reasons: reasons
+    };
   }
 
   /* ------------------------------------------------------------------ */
@@ -437,6 +726,7 @@
 
   global.Sentiment = {
     analyze: analyze,
+    analyzeReal: analyzeReal,
     confluence: confluence,
     currencyStrength: currencyStrength,
     retailPositioning: retailPositioning,

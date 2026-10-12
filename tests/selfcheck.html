@@ -447,8 +447,8 @@
     sen.retail.longPct.toFixed(1) + '% long / ' + sen.retail.shortPct.toFixed(1) + '% short');
   log(Math.abs(sen.retail.longPct - 50) < 1 ||
     Math.sign(sen.retail.contrarianScore) === -Math.sign(sen.retail.longPct - 50),
-    'Lettura contro-aria opposta al posizionamento della folla',
-    'score contro-ario ' + sen.retail.contrarianScore.toFixed(2));
+    'Lettura contraria opposta al posizionamento della folla',
+    'score contrario ' + sen.retail.contrarianScore.toFixed(2));
 
   log(sen.risk.score >= 0 && sen.risk.score <= 100 && sen.risk.volIndex >= 0 && sen.risk.volIndex <= 100,
     'Indici di propensione al rischio e di volatilita\u0300 in 0-100',
@@ -475,11 +475,102 @@
   var cfNone = SEN.confluence(0.05, -0.04, 0.02);
   log(cfNone.direction === 'NEUTRAL', 'Confluenza: segnali deboli restano neutri', 'score=' + cfNone.score.toFixed(3));
 
+  // ---------- 8a-bis. sentiment reale (CFTC COT + VIX + DXY) ----------
+  // Costruttore deterministico di un payload equivalente a quello del ponte.
+  function fakeCotRows(weeks, startNet, drift) {
+    var out = [];
+    for (var k = 0; k < weeks; k++) {
+      var oi = 500000 + (k % 7) * 1000;
+      var netPct = startNet + drift * (k / weeks);          // % dell'open interest
+      var net = Math.round(netPct / 100 * oi);
+      out.push({
+        t: 1600000000000 + k * 7 * 86400000,
+        nl: Math.round((oi + net) / 2), ns: oi - Math.round((oi + net) / 2),
+        cl: 300000, cs: 200000, oi: oi
+      });
+    }
+    return out;
+  }
+  function fakeIndex(start, end, n) {
+    var out = [];
+    for (var k = 0; k < n; k++) {
+      out.push({ time: 1700000000000 + k * 86400000,
+                 close: start + (end - start) * k / (n - 1) });
+    }
+    return out;
+  }
+  var senRealPayload = {
+    cot: {
+      ok: true, asOf: '2026-10-06', weeks: 120,
+      contracts: {
+        EUR: { code: '099741', rows: fakeCotRows(120, 2, 12) },     // verso un estremo lungo
+        JPY: { code: '097741', rows: fakeCotRows(120, 0, -10) },
+        GBP: { code: '096742', rows: fakeCotRows(120, 0, 0) },
+        CHF: { code: '092741', rows: fakeCotRows(120, 0, 0) },
+        CAD: { code: '090741', rows: fakeCotRows(120, 0, 0) },
+        AUD: { code: '232741', rows: fakeCotRows(120, 0, 0) },
+        NZD: { code: '112741', rows: fakeCotRows(120, 0, 0) },
+        XAU: { code: '088691', rows: fakeCotRows(120, 0, 0) },
+        XAG: { code: '084691', rows: fakeCotRows(120, 0, 0) }
+      }
+    },
+    vix: { ok: true, level: 13.5, asOf: '2026-10-09', symbol: '^VIX',
+           candles: fakeIndex(30, 13.5, 200) },                     // paura in calo
+    dxy: { ok: true, level: 101, asOf: '2026-10-09', symbol: 'DX-Y.NYB',
+           candles: fakeIndex(99, 101, 200) }
+  };
+  var eurRealCandles = D.generateSeries('EUR/USD', 'D1', 0).candles;
+  var senR = SEN.analyzeReal(senRealPayload, eurRealCandles, D.INSTRUMENTS[0], { symbol: 'EUR/USD' });
+  log(!!senR && senR.real === true && senR.components.length === 4,
+    'Sentiment reale: 4 componenti tutte da fonti reali',
+    'fonti: ' + senR.sources.join(', '));
+  log(senR.score >= -1 && senR.score <= 1 &&
+    ['FORTE RIALZO', 'RIALZO', 'NEUTRO', 'RIBASSO', 'FORTE RIBASSO'].indexOf(senR.bias) >= 0,
+    'Sentiment reale: punteggio ed etichetta validi',
+    'score=' + senR.score.toFixed(3) + ' (' + senR.bias + ')');
+  log(senR.strength.list.length === 10 && senR.strength.byCurrency.USD.basis === 'DXY' &&
+    senR.strength.byCurrency.EUR.basis === 'COT',
+    'Sentiment reale: classifica su tutte le divise con base dichiarata',
+    'USD=' + senR.strength.byCurrency.USD.basis + ', EUR=' + senR.strength.byCurrency.EUR.basis);
+  var senR2 = SEN.analyzeReal(senRealPayload, eurRealCandles, D.INSTRUMENTS[0], { symbol: 'EUR/USD' });
+  log(Math.abs(senR.score - senR2.score) < 1e-12,
+    'Sentiment reale: deterministico (stesso input, stesso score)',
+    senR.score.toFixed(6));
+  log(senR.strength.byCurrency.EUR.score >= 95,
+    'Sentiment reale: il percentile segue il posizionamento (estremo lungo riconosciuto)',
+    'EUR percentile ' + senR.strength.byCurrency.EUR.score.toFixed(0));
+  log(!!senR.retail && senR.retail.excludedFromScore === true && senR.retail.simulated === true,
+    'Sentiment reale: il retail resta simulato e fuori dal punteggio',
+    'retail ' + senR.retail.longPct.toFixed(0) + '% long, escluso');
+  log(senR.risk.label === 'Risk-on' && senR.risk.vixPercentile < 10,
+    'Sentiment reale: il VIX basso genera risk-on', 'VIX pctl ' + senR.risk.vixPercentile.toFixed(0));
+  log(senR.institutional.simulated === false && senR.institutional.list.length === 9 &&
+    senR.institutional.list[0].net >= senR.institutional.list[senR.institutional.list.length - 1].net,
+    'Sentiment reale: posizionamento istituzionale da COT, ordinato',
+    'affollata ' + senR.institutional.crowded.currency + ' (pctl ' + senR.institutional.crowded.net.toFixed(0) + ')');
+  // robustezza: senza VIX e senza DXY il punteggio resta calcolabile
+  var senR3 = SEN.analyzeReal({ cot: senRealPayload.cot, vix: null, dxy: null },
+    eurRealCandles, D.INSTRUMENTS[0], { symbol: 'EUR/USD' });
+  log(senR3.components.length === 3 && isFinite(senR3.score) &&
+    senR3.score >= -1 && senR3.score <= 1,
+    'Sentiment reale: senza VIX/DXY il punteggio degrada con eleganza (3 componenti)',
+    'componenti=' + senR3.components.length + ' score=' + senR3.score.toFixed(3));
+  // robustezza: righe COT corrotte non producono NaN
+  var corrotto = JSON.parse(JSON.stringify(senRealPayload));
+  corrotto.cot.contracts.EUR.rows[119] = { t: 1, nl: 'x', ns: null, cl: 1, cs: 1, oi: 0 };
+  var senR4 = SEN.analyzeReal(corrotto, eurRealCandles, D.INSTRUMENTS[0], { symbol: 'EUR/USD' });
+  log(isFinite(senR4.score) && senR4.components.every(function (cp) { return isFinite(cp.score); }),
+    'Sentiment reale: righe COT corrotte non inquinano il punteggio',
+    'score=' + senR4.score.toFixed(3));
+
   // ---------- 8b. feed dei dati reali (modulo ponte) ----------
   var FX = window.ForexFeed;
   log(!!FX && !!FX.TF_FALLBACK && !!FX.TF_FALLBACK.M10,
     'Modulo feed presente con il timeframe M10', FX.TF_FALLBACK ? FX.TF_FALLBACK.M10.interval : 'mancante');
   log(!!D.TIMEFRAMES.M10 && D.TIMEFRAMES.M10.minutes === 10, 'Il timeframe M10 esiste nel generatore');
+  log(typeof FX.loadSentiment === 'function' && typeof FX.loadNews === 'function',
+    'Il ponte espone i feed di sentiment reale e notizie/calendario',
+    'loadSentiment ' + typeof FX.loadSentiment + ', loadNews ' + typeof FX.loadNews);
 
   // pulizia delle candele: righe illeggibili, tempi disordinati, OHLC incoerenti
   var filthy = {

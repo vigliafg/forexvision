@@ -194,48 +194,6 @@
     </div>
 
     <div class="card">
-      <div class="card-head">
-        <h2>Sentiment di mercato</h2>
-        <span class="dim" id="sentStamp"></span>
-      </div>
-
-      <div class="sent-badge" id="sentBadge">
-        <span class="sent-dir">&mdash;</span>
-        <span class="sent-conf">forza relativa &mdash;</span>
-      </div>
-
-      <p class="note small sent-scope" id="sentScope" style="display:none"></p>
-      <label class="note small sent-scope" id="simCtxRow" style="display:none">
-        <input type="checkbox" id="simCtx"> includi nel sentiment anche il contesto simulato (14 strumenti)
-      </label>
-
-      <h3 class="mini-title">Forza delle valute <span class="dim" id="strengthTf"></span></h3>
-      <ul class="strength-list" id="strengthList"></ul>
-
-      <h3 class="mini-title">Posizionamento retail<span class="dim" id="retailPair"></span></h3>
-      <div class="retail-bar" id="retailBar">
-        <span class="retail-long" id="retailLong"></span>
-        <span class="retail-short" id="retailShort"></span>
-        <span class="retail-label" id="retailLabel"></span>
-      </div>
-      <p class="note small" id="retailNote"></p>
-
-      <h3 class="mini-title">Regime di mercato</h3>
-      <div class="risk-row">
-        <div class="gauge-mini">
-          <div class="gauge-bar"><div class="gauge-fill" id="riskFill"></div></div>
-          <div class="gauge-scale"><span>Risk-off</span><span>Neutro</span><span>Risk-on</span></div>
-        </div>
-      </div>
-      <ul class="kpi-list" id="riskList"></ul>
-
-      <h3 class="mini-title">Posizionamento istituzionale <span class="dim">(COT-style, simulato)</span></h3>
-      <ul class="inst-list" id="instList"></ul>
-
-      <ul id="sentReasons" class="reasons compact"></ul>
-    </div>
-
-    <div class="card">
       <div class="card-head"><h2>Watchlist</h2><span class="dim">segnale sintetico</span></div>
       <ul class="watchlist" id="watchlist"></ul>
     </div>
@@ -256,6 +214,67 @@
 
   </aside>
 </main>
+
+<!-- ============ BANDA SENTIMENT + NOTIZIE (affiancate) ============ -->
+<section class="news-band">
+
+  <div class="card">
+    <div class="card-head">
+      <h2>Sentiment di mercato</h2>
+      <span class="dim" id="sentStamp"></span>
+    </div>
+
+    <div class="sent-badge" id="sentBadge">
+      <span class="sent-dir">&mdash;</span>
+      <span class="sent-conf">forza relativa &mdash;</span>
+    </div>
+
+    <p class="note small sent-scope" id="sentScope" style="display:none"></p>
+    <label class="note small sent-scope" id="simCtxRow" style="display:none">
+      <input type="checkbox" id="simCtx"> includi nel sentiment anche il contesto simulato (14 strumenti)
+    </label>
+
+    <h3 class="mini-title">Forza delle valute <span class="dim" id="strengthTf"></span></h3>
+    <ul class="strength-list" id="strengthList"></ul>
+
+    <h3 class="mini-title">Posizionamento retail<span class="dim" id="retailPair"></span></h3>
+    <div class="retail-bar" id="retailBar">
+      <span class="retail-long" id="retailLong"></span>
+      <span class="retail-short" id="retailShort"></span>
+      <span class="retail-label" id="retailLabel"></span>
+    </div>
+    <p class="note small" id="retailNote"></p>
+
+    <h3 class="mini-title">Regime di mercato</h3>
+    <div class="risk-row">
+      <div class="gauge-mini">
+        <div class="gauge-bar"><div class="gauge-fill" id="riskFill"></div></div>
+        <div class="gauge-scale"><span>Risk-off</span><span>Neutro</span><span>Risk-on</span></div>
+      </div>
+    </div>
+    <ul class="kpi-list" id="riskList"></ul>
+
+    <h3 class="mini-title">Posizionamento istituzionale <span class="dim" id="instTitle"></span></h3>
+    <ul class="inst-list" id="instList"></ul>
+
+    <ul id="sentReasons" class="reasons compact"></ul>
+  </div>
+
+  <div class="card news-card">
+    <div class="card-head">
+      <h2>Notizie e calendario</h2>
+      <span class="dim" id="newsStamp"></span>
+    </div>
+
+    <h3 class="mini-title">Calendario eventi <span class="dim">pertinenti a EUR/USD</span></h3>
+    <ul class="calendar-list" id="calendarList"></ul>
+
+    <h3 class="mini-title">Notizie di mercato <span class="dim" id="newsSourceNote"></span></h3>
+    <ul class="news-list" id="newsList"></ul>
+    <p class="note small" id="newsNote" style="display:none"></p>
+  </div>
+
+</section>
 
 <section class="card journal">
   <div class="card-head">

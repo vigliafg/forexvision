@@ -28,8 +28,10 @@ cd ~/Documenti/forex
 
 Dalla home c'è anche la scorciatoia: `~/forex.sh`
 
-Il server `server.py` serve i file **e** espone `/api/candles`, che scarica i prezzi
-reali da Yahoo Finance, li ripulisce e li riconverte nel formato dell'app. Se il server
+Il server `server.py` serve i file **e** espone `/api/candles` (prezzi veri da
+Yahoo Finance), `/api/sentiment` (CFTC COT + VIX + indice del dollaro) e
+`/api/news` (RSS ForexLive/FXStreet/Fed/BCE + calendario ForexFactory), consegnati
+ripuliti e in cache nel formato dell'app. Se il server
 non è in esecuzione (apertura diretta da `file://`, niente rete, fornitore irraggiungibile)
 l'app ripiega **da sola** sulla modalità simulata e lo segnala nel badge in alto.
 
@@ -96,7 +98,7 @@ forex/
 │   ├── forecast.js       motore previsionale + backtest walk-forward
 │   ├── smc.js            motore Smart Money Concepts
 │   ├── sentiment.js      studio del sentiment (forza valute, posizionamento, rischio)
-│   ├── feed.js           lettura e controllo dei dati reali dal ponte
+│   ├── feed.js           lettura e controllo dei dati reali, sentiment e notizie dal ponte
 │   ├── report.js         report divulgativo in linguaggio semplice
 │   ├── chart.js          renderer del grafico a candele su canvas
 │   └── app.js            controller e collegamento all'interfaccia
@@ -125,9 +127,13 @@ forex/
 - **Report divulgativo**: un documento in linguaggio semplice che spiega il quadro
   attuale e le previsioni dei tre studi, con glossario di tutti i termini tecnici
   usati, copiabile, scaricabile come file di testo o stampabile.
-- **Studio del sentiment**: forza relativa delle 10 divise (0-100) su tre orizzonti,
-  posizionamento della folla con lettura contro-aria, regime risk-on/risk-off,
-  indice di volatilità di mercato e posizionamento istituzionale per divisa.
+- **Notizie e calendario** affiancate al sentiment: comunicati ufficiali di Fed e BCE
+  (RSS), notizie forex di ForexLive e FXStreet e calendario economico filtrato per
+  EUR/USD con tag di impatto, previsione e countdown sul prossimo evento.
+- **Studio del sentiment**: forza relativa delle divise su scala 0-100 e posizionamento
+  istituzionale **reali** (CFTC Commitments of Traders + VIX + indice del dollaro),
+  regime risk-on/risk-off dal VIX, momentum della coppia dai prezzi veri. Il
+  pannello retail resta un modello simulato dichiarato, fuori dal punteggio.
 - **Piano operativo tecnico**: prezzo di ingresso, obiettivo (TP), stop loss, rapporto R:R,
   movimento atteso in pip e volatilità ATR.
 - **Proiezione probabilistica**: traiettoria attesa su N candele con banda a 1σ,
@@ -231,16 +237,15 @@ candela resta la vera, con la scritta "ultimo aggiornamento hh:mm:ss".
   del grafico rimane vuoto e la riga "Volumi vs media" mostra `n.d.`.
 - L'ultima candela della serie è ancora **in formazione** (il suo intervallo non è
   chiuso) e viene segnalata come tale.
-- Lo studio di **sentiment** confronta più cambi: con un solo cambio reale mostrerebbe
-  la forza di EUR solo contro USD, che non aggiunge informazione indipendente. Quindi
-  con i dati reali il verdetto finale si appoggia ad **analisi tecnica e SMC** (la
-  scheda lo spiega), mentre il `sentiment` resta disponibile in modalità simulata o con
-  la spunta "includi il contesto simulato". Nel pannello di confluenza i tre studi
-  restano **sempre** in vista: quello che non pesa nel verdetto è marcato «escluso dal
-  verdetto» con il motivo, così nessuno studio sparisce dall'interfaccia.
-- Gli endpoint di Yahoo Finance usati sono **non ufficiali**: possono cambiare o
-  rispondere con liste d'attesa (HTTP 429). Il ponte gestisce entrambi i casi ripiegando
-  sulla cache o sulla modalità simulata.
+- **Studi di sentiment**: con i dati reali il posizionamento istituzionale arriva
+  dal **report COT della CFTC** (settimanale, dati di martedì rilasciati venerdì),
+  il regime di rischio dal **VIX reale** e la forza del dollaro dall'**indice DXY**;
+  il pannello retail resta simulato e dichiarato, fuori dal punteggio. Senza le
+  fonti il sentiment ripiega sul modello simulato e viene escluso dal verdetto.
+- Gli endpoint di Yahoo Finance e della CFTC usati sono **ufficiali/non ufficiali
+  rispettivamente**: la CFTC è il regolatore stesso (dati pubblici, stabili), mentre
+  Yahoo può cambiare o rispondere con liste d'attesa (HTTP 429). Il ponte gestisce
+  entrambi i casi ripiegando sulla cache o sulla modalità simulata.
 
 ## Il report in linguaggio semplice
 
@@ -279,25 +284,37 @@ in bianco e nero leggibile).
 
 ## Come funziona lo studio del sentiment
 
-Il modulo `js/sentiment.js` incrocia quattro analisi, di cui le prime due sono calcolate
-dai prezzi e le altre due sono modelli dichiaratamente simulati:
+Il modulo `js/sentiment.js` ha **due motori**: uno reale, costruito su fonti
+autorevoli, e uno simulato dichiarato per quando le fonti non rispondono.
 
-1. **Forza delle valute (calcolata)** - ogni divisa viene valutata sui rendimenti di
-   tutte le coppie in cui compare (segno + se base, - se quotata) su 5, 20 e 60 barre,
-   normalizzata in una scala 0-100 e ordinata in classifica. E' il modo standard di
-   misurare il sentiment relativo di una divisa.
-2. **Propensione al rischio (calcolata)** - confronto fra divise pro-cicliche
-   (AUD, NZD, CAD, argento) e rifugio (JPY, CHF, oro), piu' un indice di volatilita'
-   di mercato dato dall'ATR corrente di tutte le coppie rispetto alla propria media.
-3. **Posizionamento della folla (simulato)** - la percentuale di posizioni long riproduce
-   il comportamento contro-tendenza tipico del retail (compra i ribassi, media in perdita)
-   e viene letta in chiave contraria agli estremi.
-4. **Posizionamento istituzionale (simulato, COT-style)** - posizione netta per divisa
-   derivata dalla forza di medio periodo con reversione agli estremi, variazione
-   settimanale e segnalazione delle divise piu' affollate.
+**Sentiment reale (modalità dati reali, `js/sentiment.js: analyzeReal`)** —
+quattro componenti, tutte su dati veri:
 
-Il punteggio di sentiment combina i quattro contributi (forza 0,45; folla 0,22; rischio
-0,18; istituzionale 0,15) e confluisce con gli altri due motori nel verdetto finale.
+1. **Posizionamento CFTC (COT)** — il report settimanale *Commitments of
+   Traders* del regolatore USA (API ufficiale `publicreporting.cftc.gov`,
+   nessuna chiave): posizionamento netto non-commerciale in % dell'open
+   interest, letto come **percentile della storia a 5 anni** (contratti CME:
+   EUR 099741, JPY, GBP, CHF, CAD, AUD, NZD; oro e argento COMEX). Peso 0,35.
+2. **Flussi settimanali COT** — variazione del posizionamento netto rispetto
+   alla settimana precedente. Peso 0,15.
+3. **Momentum del prezzo reale** — ROC 5/20 barre della coppia (candele vere),
+   normalizzato su ATR. Peso 0,30.
+4. **Regime di rischio dal VIX reale** — livello del VIX come percentile della
+   distribuzione annua; in risk-on favorisce le divise pro-cicliche, in
+   risk-off i rifugi. Peso 0,20.
+
+La forza del dollaro (per la gamba USD) è misurata dall'**indice DXY reale**
+(percentile del trend a 20 sedute). Il pannello retail resta un modello
+simulato dichiarato ed è **escluso dal punteggio**. Con tutti i dati reali il
+sentiment **rientra nel verdetto di confluenza** a pieno titolo.
+
+**Sentiment simulato (fallback)** — quando il ponte o le fonti non rispondono
+lo studio torna all'originale a quattro voci: forza valute calcolata sui
+prezzi disponibili (con un solo cambio reale la classifica è dichiarata
+incompleta e il sentiment è escluso dal verdetto), propensione al rischio e i
+due modelli dichiaratamente simulati (retail e istituzionale).
+
+Il punteggio di sentiment confluisce con gli altri due motori nel verdetto finale.
 
 ## Realismo dei dati e calibrazione
 
@@ -319,7 +336,7 @@ con dimensioni del pip corrette (0,0001 per EUR/USD, 0,01 per USD/JPY, 0,01 USD 
 I test girano in un browser e funzionano anche aperti direttamente da `file://`
 (la pagina mostra PASS/FAIL a schermo):
 
-- `tests/selfcheck.html` — 102 controlli: indicatori su serie costruite a mano, validità
+- `tests/selfcheck.html` — 113 controlli: indicatori su serie costruite a mano, validità
   delle serie OHLC, ordine cronologico, motore previsionale e backtest, assenza di NaN
   su 84 combinazioni strumento × timeframe (ora anche M10), realismo della volatilità,
   **SMC** (swing, BOS/CHoCH, order block, FVG, liquidità, range/OTE, coerenza dello
@@ -336,7 +353,7 @@ I test girano in un browser e funzionano anche aperti direttamente da `file://`
   confluenza, SMC, sentiment e report), rendering del canvas e dei livelli SMC,
   apertura/chiusura/copia del report, cambio coppia e timeframe, registrazione e
   chiusura di un trade virtuale, assenza di errori JavaScript.
-- `tests/live.html` — 26 controlli end-to-end con il ponte dei dati reali attivo:
+- `tests/live.html` — 32 controlli end-to-end con il ponte dei dati reali attivo:
   badge e ora di aggiornamento, prezzo EUR/USD reale, analisi calcolate sui prezzi veri,
   i tre studi sempre visibili con il sentiment marcato «escluso dal verdetto» e il
   verdetto che pesa solo i modelli con un universo completo,

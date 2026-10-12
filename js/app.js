@@ -26,6 +26,8 @@
     sentiment: null,
     confluence: null,
     report: null,
+    news: null,             // payload notizie + calendario dal ponte
+    newsStamp: 0,           // quando è arrivato l'ultimo payload valido
     marketCache: [],
     backtest: null,
     instrument: null,
@@ -88,7 +90,14 @@
     refresh(true).then(function () {
       renderWatchlist();
       startFeedPolling();
+      fetchNews().then(function () { renderNews(); });
     });
+
+    // Notizie e calendario: il ponte tiene una cache di 5 minuti, quindi un
+    // ciclo di 5 minuti è la cadenza giusta (indipendente dai dati candele).
+    setInterval(function () {
+      fetchNews().then(function (ok) { if (ok) renderNews(); });
+    }, 5 * 60 * 1000);
 
     // collegamento diretto: index.html#report apre subito il report
     if (location.hash === '#report') openReport();
@@ -99,8 +108,7 @@
       if (!state.live) return;
       buildMarketCache();
       renderWatchlist();
-      state.sentiment = SEN.analyze(state.marketCache, state.pair, state.instrument, sentimentOpts());
-      state.confluence = computeConfluence();
+      recomputeSentiment();
       renderSentiment();
       renderConfluence();
     }, 30000);
@@ -165,8 +173,7 @@
     $('simCtx').addEventListener('change', function (e) {
       state.simContext = e.target.checked;
       if (!state.sentiment) return;
-      state.sentiment = SEN.analyze(state.marketCache, state.pair, state.instrument, sentimentOpts());
-      state.confluence = computeConfluence();
+      recomputeSentiment();
       renderSentiment();
       renderConfluence();
       buildReport();
@@ -258,8 +265,16 @@
 
     // cache di tutte le coppie: serve alla watchlist e allo studio di sentiment
     buildMarketCache();
-    state.sentiment = SEN.analyze(state.marketCache, state.pair, state.instrument, sentimentOpts());
-    state.confluence = computeConfluence();
+    // Se lo studio reale (COT/VIX/DXY) è attivo NON si ricalcola quello
+    // simulato: si riapplica il payload già scaricato alle candele fresche
+    // (retail e momentum si aggiornano, i percentile COT restano validi).
+    // Altrimenti studio simulato a universo ridotto, dichiarato.
+    recomputeSentiment();
+
+    // Sentiment reale (CFTC COT + VIX + DXY): arriva dopo le candele e, se
+    // disponibile, sostituisce lo studio a universo ridotto e rientra nel
+    // verdetto. Se la fonte non risponde, resta quello simulato dichiarato.
+    refreshRealSentiment();
 
     // Il backtest è più oneroso: lo ricalcolo in modo differito
     if (btTimer) clearTimeout(btTimer);
@@ -290,12 +305,178 @@
     return { includeSimulated: state.source !== 'real' || state.simContext };
   }
 
+  /** Ricalcola lo studio di sentiment preservando quello reale.
+   *  Con lo studio reale (COT/VIX/DXY) attivo non si torna mai al simulato:
+   *  il payload già scaricato viene riapplicato alle candele correnti. */
+  function recomputeSentiment() {
+    if (state.source === 'real' && state.sentimentPayload &&
+        state.sentiment && state.sentiment.real) {
+      applyRealSentiment(state.sentimentPayload);
+    } else {
+      state.sentiment = SEN.analyze(state.marketCache, state.pair, state.instrument, sentimentOpts());
+      state.confluence = computeConfluence();
+    }
+  }
+
+  /* ------------------------------ notizie e calendario ------------------------------ */
+  let newsBusy = false;
+  const NEWS_RETRY_MS = 60 * 1000;     // su errore si riprova al giro dopo
+  function fetchNews(force) {
+    const now = Date.now();
+    if (state.news && state.newsStamp && now - state.newsStamp < 3 * 60 * 1000 && !force) {
+      return Promise.resolve(true);              // il ponte tiene 5 minuti: no spam
+    }
+    if (newsBusy) return Promise.resolve(false);
+    newsBusy = true;
+    return FX.loadNews({ force: !!force }).then(function (payload) {
+      newsBusy = false;
+      state.news = payload;
+      state.newsStamp = Date.now();
+      state.newsError = null;
+      return true;
+    }).catch(function (err) {
+      newsBusy = false;
+      state.newsError = err && err.message ? err.message : String(err);
+      setTimeout(function () { if (state.newsError) fetchNews(true); }, NEWS_RETRY_MS);
+      return false;
+    });
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  /** Rendering del pannello notizie e calendario. */
+  function renderNews() {
+    const listEl = $('newsList'), calEl = $('calendarList'), noteEl = $('newsNote');
+    if (!listEl || !calEl) return;               // pannello assente (pagine di test)
+    const n = state.news;
+    if (!n) {
+      listEl.innerHTML = '';
+      calEl.innerHTML = '';
+      noteEl.style.display = '';
+      noteEl.textContent = 'Notizie ' + (state.newsError ? 'non disponibili: ' + state.newsError :
+        'in caricamento dal ponte dati…');
+      return;
+    }
+    const stamp = $('newsStamp');
+    if (stamp) {
+      const when = new Date(n.fetchedAt).toLocaleTimeString('it-IT');
+      stamp.textContent = 'aggiornato alle ' + when + (n.stale ? ' \u00b7 dati non aggiornati' : '');
+    }
+    const srcNote = $('newsSourceNote');
+    if (srcNote) {
+      const okNum = n.sourcesOk || 1;
+      srcNote.textContent = 'fonte: ponte locale (' + okNum + ' fonti attive)';
+    }
+    noteEl.style.display = 'none';
+
+    // calendario: i prossimi eventi in evidenza, i passati attenuati
+    const now = Date.now();
+    const cal = n.calendar || [];
+    const upcoming = cal.filter(function (e) { return e.time >= now; });
+    const past = cal.filter(function (e) { return e.time < now; }).slice(-4);
+    const next = upcoming[0];
+    const fmtWhen = function (t) {
+      const d = new Date(t);
+      const sameDay = new Date().toDateString() === d.toDateString();
+      return d.toLocaleDateString('it-IT', { day: '2-digit', month: 'short' }) +
+        ' ' + d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) +
+        (sameDay ? '' : '');
+    };
+    const countdown = function (t) {
+      const ms = t - now;
+      if (ms <= 0) return '';
+      const h = Math.floor(ms / 3600000), m = Math.round((ms % 3600000) / 60000);
+      return h > 0 ? 'tra ' + h + 'h' + (m ? ' ' + m + 'm' : '') : 'tra ' + m + 'm';
+    };
+    calEl.innerHTML = cal.map(function (e) {
+      const impact = e.impact === 'High' ? 'high' : e.impact === 'Medium' ? 'med' : 'low';
+      const cls = e === next ? 'next' : (e.time < now ? 'past' : '');
+      const extra = e.forecast || e.previous ?
+        ' (' + (e.forecast ? 'atteso: ' + esc(e.forecast) : '') +
+        (e.forecast && e.previous ? ', ' : '') +
+        (e.previous ? 'prec.: ' + esc(e.previous) : '') + ')' : '';
+      return '<li class="' + cls + '">' +
+        '<span class="impact ' + impact + '">' + esc(e.impact) + '</span>' +
+        '<span class="ccy">' + esc(e.country) + '</span>' +
+        '<span class="ev">' + esc(e.title) + extra + '</span>' +
+        '<span class="when">' + fmtWhen(e.time) + (e === next ? '<br><span class="count">' + countdown(e.time) + '</span>' : '') + '</span>' +
+        '</li>';
+    }).join('') || '<li class="past"><span class="ev">nessun evento pertinente questa settimana</span></li>';
+
+    // notizie: prima quelle marcate pertinenti EUR/USD, poi le altre
+    const news = n.news || [];
+    const relevant = news.filter(function (x) { return x.eurusd; });
+    const rest = news.filter(function (x) { return !x.eurusd; });
+    const ordered = relevant.concat(rest).slice(0, 22);
+    const fmtTime = function (t) { return new Date(t).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }); };
+    listEl.innerHTML = ordered.map(function (x) {
+      const d = new Date(x.time);
+      const day = new Date().toDateString() === d.toDateString() ? '' :
+        ' ' + d.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit' });
+      return '<li' + (x.eurusd ? ' class="relevant"' : '') + '>' +
+        '<span class="nsrc' + (x.kind === 'bank' ? ' bank' : '') + '">' + esc(x.source) + '</span>' +
+        '<span class="ntime">' + fmtTime(x.time) + day + '</span>' +
+        '<a href="' + esc(x.link) + '" target="_blank" rel="noopener noreferrer">' + esc(x.title) + '</a>' +
+        '</li>';
+    }).join('');
+  }
+
+  /** Sentiment reale: CFTC (COT), VIX e indice del dollaro dal ponte.
+   *  Si aggiorna al massimo ogni 5 minuti (il COT è settimanale; il VIX
+   *  quotidiano non cambia più spesso delle candele). In caso di errore lo
+   *  studio resta quello simulato a universo ridotto, dichiarato. */
+  const SENTIMENT_REFRESH_MS = 5 * 60 * 1000;
+  let sentimentBusy = false;
+  /** Applica un payload di sentiment reale allo stato corrente e ridisegna. */
+  function applyRealSentiment(payload) {
+    state.sentimentPayload = payload;
+    state.sentiment = SEN.analyzeReal(payload, state.series.candles, state.instrument,
+      { symbol: state.pair, indicators: state.analysis.indicators });
+    state.sentimentRealError = null;
+    state.confluence = computeConfluence();
+  }
+  function refreshRealSentiment(force) {
+    if (state.source !== 'real') return Promise.resolve(null);
+    const now = Date.now();
+    const throttled = !force && state.sentimentPayload &&
+      now - state.lastSentimentFetch < SENTIMENT_REFRESH_MS;
+    // Con payload già in mano si riapplica subito: retail e momentum seguono
+    // le candele appena arrivate senza aspettare la rete.
+    if (state.sentimentPayload && state.sentiment && state.sentiment.real) {
+      applyRealSentiment(state.sentimentPayload);
+      if (throttled) { renderSentiment(); renderConfluence(); return Promise.resolve(state.sentiment); }
+    }
+    if (sentimentBusy) return Promise.resolve(null);
+    sentimentBusy = true;
+    return FX.loadSentiment(state.pair, { force: !!force }).then(function (payload) {
+      sentimentBusy = false;
+      state.lastSentimentFetch = Date.now();
+      if (state.source !== 'real') return null;     // nel frattempo è cambiata la modalità
+      applyRealSentiment(payload);
+      renderSentiment();
+      renderConfluence();
+      buildReport();
+      if (isReportOpen()) renderReport();
+      return state.sentiment;
+    }).catch(function (err) {
+      sentimentBusy = false;
+      state.sentimentRealError = err && err.message ? err.message : String(err);
+      console.warn('sentiment reale non disponibile: ' + state.sentimentRealError +
+        (err && err.stack ? '\n' + err.stack.split('\n').slice(0, 3).join('\n') : ''));
+      return null;                                   // resta lo studio simulato
+    });
+  }
+
   /** Verdetto di confluenza. In modalità reale ridotta il sentiment pesa solo se
-   *  ha un universo completo di cambi (cioè se è attivo anche il contesto simulato). */
+   *  ha un universo completo di cambi (cioè se è attivo anche il contesto simulato)
+   *  oppure se lo studio è costruito su fonti reali indipendenti (COT/VIX/DXY). */
   function computeConfluence() {
+    const sen = state.sentiment;
     const structuralReliable = state.source !== 'real' || state.simContext ||
-      !state.sentiment || !state.sentiment.scope || !state.sentiment.scope.partial;
-    return SEN.confluence(state.analysis.score, state.smc.score, state.sentiment.score,
+      !sen || !sen.scope || !sen.scope.partial || !!sen.real;
+    return SEN.confluence(state.analysis.score, state.smc.score, sen ? sen.score : 0,
       { sentimentReliable: structuralReliable });
   }
 
@@ -434,8 +615,7 @@
       cacheEntry.score = state.analysis.score;
       cacheEntry.price = last.close;
     }
-    state.sentiment = SEN.analyze(state.marketCache, state.pair, inst, sentimentOpts());
-    state.confluence = computeConfluence();
+    recomputeSentiment();
 
     chart.setData(state.series, state.analysis, inst, state.smc);
     renderHeader();
@@ -815,23 +995,33 @@
     $('sentStamp').textContent = 'aggiornato alle ' + new Date().toLocaleTimeString('it-IT');
 
     // In modalità dati reali si spiega con chiarezza quale universo usa lo
-    // studio: solo EUR/USD oppure anche il contesto simulato delle altre coppie.
+    // studio. Con il sentiment reale (COT/VIX/DXY) la fonte è dichiarata;
+    // senza, si spiega l'universo ridotto delle sole coppie reali.
     const scopeEl = $('sentScope');
     const simRow = $('simCtxRow');
     const simCheck = $('simCtx');
     if (simCheck) simCheck.checked = !!state.simContext;
     if (state.source === 'real' && s.scope) {
-      simRow.style.display = 'block';
-      if (state.simContext) {
+      if (s.real) {
+        simRow.style.display = 'none';
         scopeEl.style.display = 'block';
-        scopeEl.className = 'note small sent-scope warn';
-        scopeEl.textContent = 'Il confronto fra valute include anche 13 coppie simulate: solo EUR/USD ha prezzi reali qui sotto.';
-      } else if (s.scope.partial) {
-        scopeEl.style.display = 'block';
-        scopeEl.className = 'note small sent-scope warn';
-        scopeEl.textContent = 'Dati reali solo per EUR/USD: la forza delle valute mette a confronto le due valute della coppia (le altre restano neutre) e il verdetto finale pesa analisi tecnica e SMC.';
+        scopeEl.className = 'note small sent-scope';
+        scopeEl.textContent = 'Sentiment su dati reali: posizionamento CFTC (COT del ' +
+          (s.scope.cotAsOf || '') + '), VIX e indice del dollaro. Il pannello retail resta ' +
+          'un modello simulato dichiarato ed è fuori dal punteggio.';
       } else {
-        scopeEl.style.display = 'none';
+        simRow.style.display = 'block';
+        if (state.simContext) {
+          scopeEl.style.display = 'block';
+          scopeEl.className = 'note small sent-scope warn';
+          scopeEl.textContent = 'Il confronto fra valute include anche 13 coppie simulate: solo EUR/USD ha prezzi reali qui sotto.';
+        } else if (s.scope.partial) {
+          scopeEl.style.display = 'block';
+          scopeEl.className = 'note small sent-scope warn';
+          scopeEl.textContent = 'Dati reali solo per EUR/USD: la forza delle valute mette a confronto le due valute della coppia (le altre restano neutre) e il verdetto finale pesa analisi tecnica e SMC.';
+        } else {
+          scopeEl.style.display = 'none';
+        }
       }
     } else {
       scopeEl.style.display = 'none';
@@ -844,14 +1034,16 @@
     badge.querySelector('.sent-conf').textContent = s.symbol + ' \u00b7 score ' + signed(s.score, 3) +
       ' \u00b7 confidenza ' + (s.confidence * 100).toFixed(0) + '%';
 
-    $('strengthTf').textContent = '5 / 20 / 60 ' + state.tf;
+    $('strengthTf').textContent = s.real
+      ? 'COT CFTC \u00b7 percentile ' + (s.scope.cotAsOf || '')
+      : '5 / 20 / 60 ' + state.tf;
     $('strengthList').innerHTML = s.strength.list.map(function (c) {
       const w = Math.max(2, Math.round(c.score));
       return '<li>' +
         '<span class="cur">' + c.currency + '</span>' +
         '<span class="sbar"><i style="width:' + w + '%;background:' + barColor(c.score) + '"></i></span>' +
         '<span class="val">' + c.score.toFixed(0) + '</span>' +
-        '<span class="chg ' + (c.change >= 0 ? 'pos' : 'neg') + '">' + signed(c.change, 2) + '%</span>' +
+        '<span class="chg ' + (c.change >= 0 ? 'pos' : 'neg') + '">' + signed(c.change, 2) + '</span>' +
         '</li>';
     }).join('');
 
@@ -866,24 +1058,36 @@
         ' della folla (nessuna fonte dati di broker, valori indicativi).';
     }
 
-    $('riskFill').style.left = s.risk.score + '%';
-    $('riskList').innerHTML = [
-      ['Regime', s.risk.label + ' (' + s.risk.score.toFixed(0) + '/100)'],
-      ['Volatilit\u00e0', s.risk.volLabel + ' (' + s.risk.volRatio.toFixed(2) + 'x)'],
-      ['Valute pro-cicliche', s.risk.riskCurrencies.toFixed(0) + '/100'],
-      ['Valute rifugio', s.risk.havens.toFixed(0) + '/100']
-    ].map(function (row) {
-      return '<li><span class="k">' + row[0] + '</span><span class="v">' + row[1] + '</span></li>';
-    }).join('');
+    if (s.risk && isFinite(s.risk.score)) {
+      $('riskFill').style.left = s.risk.score + '%';
+      const riskRows = [
+        ['Regime', s.risk.label + ' (' + s.risk.score.toFixed(0) + '/100)'],
+        ['Volatilit\u00e0', s.risk.volLabel + ' (' + s.risk.volRatio.toFixed(2) + 'x)']
+      ];
+      if (isFinite(s.risk.riskCurrencies)) riskRows.push(['Valute pro-cicliche', s.risk.riskCurrencies.toFixed(0) + '/100']);
+      if (isFinite(s.risk.havens)) riskRows.push(['Valute rifugio', s.risk.havens.toFixed(0) + '/100']);
+      if (s.real && isFinite(s.risk.vix)) riskRows.push(['VIX', s.risk.vix.toFixed(1) + ' (percentile ' + s.risk.vixPercentile.toFixed(0) + ')']);
+      $('riskList').innerHTML = riskRows.map(function (row) {
+        return '<li><span class="k">' + row[0] + '</span><span class="v">' + row[1] + '</span></li>';
+      }).join('');
+    }
 
     const top = s.institutional.list.slice(0, 3);
     const light = s.institutional.lightest;
+    const instTitle = $('instTitle');
+    if (instTitle) {
+      instTitle.textContent = s.real
+        ? 'COT CFTC del ' + (s.institutional.asOf || '') + ' (percentile 5 anni, reale)'
+        : '(COT-style, simulato)';
+    }
     $('instList').innerHTML = top.map(function (i) {
-      return '<li><span class="k">' + i.currency + ' netto long</span><span class="v ' +
+      return '<li><span class="k">' + i.currency + (s.real ? ' (COT)' : ' netto long') +
+        '</span><span class="v ' +
         (i.extreme === 'long' ? 'extreme-long' : i.extreme === 'short' ? 'extreme-short' : '') + '">' +
-        i.net.toFixed(0) + '% \u00b7 ' + (i.change >= 0 ? '+' : '') + i.change.toFixed(1) + '</span></li>';
-    }).concat(['<li><span class="k">' + light.currency + ' (pi\u00f9 leggera)</span><span class="v ' +
-      (light.extreme === 'short' ? 'extreme-short' : '') + '">' + light.net.toFixed(0) + '%</span></li>'])
+        i.net.toFixed(0) + (s.real ? ' percentile' : '%') + ' \u00b7 ' + (i.change >= 0 ? '+' : '') + i.change.toFixed(1) + '</span></li>';
+    }).concat(['<li><span class="k">' + light.currency + (s.real ? ' (meno affollata)' : ' (pi\u00f9 leggera)') +
+      '</span><span class="v ' +
+      (light.extreme === 'short' ? 'extreme-short' : '') + '">' + light.net.toFixed(0) + (s.real ? ' percentile' : '%') + '</span></li>'])
       .join('');
 
     const list = $('sentReasons');

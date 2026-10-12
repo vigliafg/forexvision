@@ -9,9 +9,13 @@
 #       ./avvia.sh --file           forza l'apertura diretta del file (file://)
 #       ./avvia.sh --stop           ferma il server locale avviato in precedenza
 #
-# Il server (server.py) serve i file e, attraverso /api/candles, porta i
-# prezzi reali di EUR/USD da Yahoo Finance. Senza rete l'app ripiega da sola
-# sulla modalità simulata, dichiarandolo in alto a destra.
+# Il server (server.py) serve i file e tre endpoint di dati reali:
+#   /api/candles    prezzi veri di EUR/USD da Yahoo Finance;
+#   /api/sentiment  posizionamento CFTC (COT) + VIX + indice del dollaro;
+#   /api/news       RSS ForexLive/FXStreet/Fed/BCE + calendario economico.
+# Senza rete l'app ripiega da sola sulla modalità simulata, dichiarandolo
+# in alto a destra; per il sentiment il fallback è esplicito e il verdetto
+# riduce i modelli che pesano (l'interfaccia lo spiega).
 #
 # Con --lan il ponte ascolta su tutte le interfacce (rete locale e Tailscale):
 # utile per usare l'app dal telefono o da un altro computer. L'app non chiede

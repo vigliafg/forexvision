@@ -110,34 +110,62 @@
     var atr = parseFloat($('#planAtr').textContent.replace(',', '.'));
     log(isFinite(atr) && atr > 0, 'ATR positivo (dati reali)', atr);
 
-    // --- confluenza ridotta: il sentiment ha un solo cambio reale ----------
+    // --- confluenza: con il sentiment reale (COT/VIX/DXY) pesa 3 su 3; se la
+    // fonte non risponde lo studio resta visibile e marcato escluso ----------
     log($$('#confGrid .conf-item').length === 3,
       'I tre studi restano visibili anche con i dati reali',
       $$('#confGrid .conf-item .name').map(function (e) { return e.textContent; }).join(' + '));
-    log($$('#confGrid .conf-item.excluded').length === 1 &&
-      /Sentiment di mercato/.test($('#confGrid .conf-item.excluded .name').textContent),
-      'Lo studio fuori dal verdetto \u00e8 marcato come escluso',
-      $('#confGrid .conf-item.excluded').textContent);
-    log(/escluso dal verdetto/.test($('#confStamp').textContent),
-      'L\u2019intestazione dichiara lo studio escluso', $('#confStamp').textContent);
-    log(/\/2 modelli concordi/.test($('#confVerdict').textContent),
-      'Il verdetto combina solo i modelli con un universo completo (2 su 2)',
+    log($$('#confGrid .conf-item.excluded').length === 0 ||
+      (/Sentiment di mercato/.test($('#confGrid .conf-item.excluded .name').textContent) &&
+       $$('#confGrid .conf-item.excluded').length === 1),
+      'Con sentiment reale nessuno studio è escluso; altrimenti solo il sentiment',
+      $$('#confGrid .conf-item.excluded').length
+        ? $('#confGrid .conf-item.excluded').textContent
+        : 'nessuno escluso (sentiment reale)');
+    log(/escluso dal verdetto/.test($('#confStamp').textContent) ||
+      !/escluso/.test($('#confStamp').textContent),
+      'L\u2019intestazione dichiara in modo coerente l\u2019inclusione o l\u2019esclusione',
+      $('#confStamp').textContent);
+    log(/\/[23] modelli concordi/.test($('#confVerdict').textContent),
+      'Il verdetto dichiara quanti modelli pesano (2 o 3)',
       $('#confVerdict').textContent.slice(0, 90) + '\u2026');
     log(/^(ACQUISTO|VENDITA|NEUTRO)$/.test($('#confVerdict .tag-big').textContent),
       'Verdetto di confluenza presente', $('#confVerdict').textContent.slice(0, 60) + '\u2026');
 
-    // --- sentiment onesto: universo ridotto dichiarato ---------------------
-    log(/Dati reali solo per EUR\/USD/.test($('#sentScope').textContent),
-      'La scheda sentiment spiega l\u2019universo ridotto', $('#sentScope').textContent.slice(0, 70) + '\u2026');
-    log($('#simCtxRow').style.display !== 'none', 'L\u2019opzione del contesto simulato è visibile');
+    // --- sentiment: reale (CFTC COT + VIX + dollaro) o ridotto, sempre dichiarato
+    log(/Sentiment su dati reali|Dati reali solo per EUR\/USD/.test($('#sentScope').textContent),
+      'La scheda sentiment dichiara le sue fonti (reali CFTC o universo ridotto)',
+      $('#sentScope').textContent.slice(0, 70) + '\u2026');
+    log($('#simCtxRow').style.display !== 'none' || /CFTC/.test($('#sentScope').textContent),
+      'L\u2019opzione del contesto simulato o la nota delle fonti reali è visibile');
     log($$('#strengthList li').length === 10, 'La forza è comunque mostrata su tutte le valute');
 
-    // --- report: sezione "fonte dei dati" ----------------------------------
-    $('#reportBtn').click();
-    return waitFor(function () { return $('#reportBody').textContent.indexOf('La fonte dei dati') >= 0; }, 8000).then(function (ok) {
+    // --- notizie e calendario: pannello affiancato al sentiment -------------
+    return waitFor(function () { return $$('#newsList li').length > 0; }, 20000).then(function (newsOk) {
+      log(newsOk, 'Il pannello notizie si popola dal ponte',
+        $$('#newsList li').length + ' titoli');
+      log($$('#calendarList li').length > 0, 'Il calendario eventi pertinenti è valorizzato',
+        $$('#calendarList li').length + ' eventi');
+      var srcNote = $('#newsSourceNote');
+      log(!!srcNote && /fonte: ponte locale/.test(srcNote.textContent),
+        'Il pannello dichiara il numero di fonti attive',
+        srcNote ? srcNote.textContent : 'newsSourceNote assente nel DOM');
+      log($('#calendarList').textContent.indexOf('High') >= 0 ||
+        $('#calendarList').textContent.indexOf('Medium') >= 0,
+        'Gli eventi portano il tag di impatto',
+        $('#calendarList').textContent.slice(0, 60));
+      log($$('.news-list a[target="_blank"]').length > 0,
+        'I titoli sono collegati alla fonte originale',
+        $$('.news-list a').length + ' link');
+
+      // --- report: sezione "fonte dei dati" ----------------------------------
+      $('#reportBtn').click();
+      return waitFor(function () { return $('#reportBody').textContent.indexOf('La fonte dei dati') >= 0; }, 8000).then(function (ok) {
       log(!$('#reportOverlay').classList.contains('hidden'), 'Il report si apre');
       log(ok, 'Il report include la sezione \u201cLa fonte dei dati\u201d');
       log($('#reportBody').textContent.indexOf('Yahoo Finance') >= 0, 'Il report cita Yahoo Finance');
+      log($('#reportBody').textContent.indexOf('CFTC') >= 0 || $('#reportBody').textContent.indexOf('Commitments of Traders') >= 0,
+        'Il report cita la fonte del sentiment reale (CFTC)');
       log(/\bM10|10 minuti\b/.test($('#reportBody').textContent), 'Il report cita il timeframe a 10 minuti');
 
       // --- passaggio a una coppia non collegata ------------------------------
@@ -171,10 +199,11 @@
             var errs = (w.__errors || []);
             log(errs.length === 0, 'Nessun errore JavaScript durante il test dei dati reali', errs.join(' ; '));
             return Promise.resolve();
-          });
-        });
-      });
-    });
+          });                                       // blocco storico D1
+        });                                         // ritorno a EUR/USD reale
+      });                                           // sim dichiarato su altre coppie
+      });                                           // report 'La fonte dei dati'
+    });                                             // blocco notizie e calendario
   }
 })();
 </script>

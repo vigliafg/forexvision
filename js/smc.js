@@ -388,8 +388,11 @@
       bull: 'La struttura conferma il rialzo', bear: 'La struttura conferma il ribasso'
     });
 
-    // posizione nel range: comprare in sconto, vendere in premio
-    const posScore = range.span === 0 ? 0 : (bias === 1 ? (0.5 - range.position) * 2 : (range.position - 0.5) * 2);
+    // posizione nel range: comprare in sconto, vendere in premio. La dottrina
+    // dichiarata (testi del componente, glossario e report) non dipende dal
+    // bias strutturale: in sconto il punteggio è positivo (area di acquisto
+    // istituzionale), in premio negativo (area di vendita istituzionale).
+    const posScore = range.span === 0 ? 0 : (0.5 - range.position) * 2;
     components.push({
       key: 'range', label: 'Premium / Discount', score: clamp(posScore, -1, 1), weight: 0.18,
       detail: (range.position * 100).toFixed(0) + '% del range ' + range.low.toFixed(instrument.digits) +
@@ -399,7 +402,10 @@
     });
 
     // order block fresco in direzione, sul lato corretto rispetto al prezzo
-    // (una zona di domanda deve stare sotto il prezzo, una di offerta sopra)
+    // (una zona di domanda deve stare sotto il prezzo, una di offerta sopra).
+    // La qualita' della zona sostiene la tesi di struttura: il punteggio riceve
+    // quindi il segno del bias (zona rialzista sotto il prezzo -> positivo,
+    // zona ribassista sopra il prezzo -> negativo).
     const side = bias === 1 ? 'below' : 'above';
     const obNear = nearestZone(obs, dirKind, price, atr, 6, side);
     let obScore = 0;
@@ -409,6 +415,7 @@
       obScore *= (1 - Math.min(1, obNear.distAtr / 6));
       obScore += 0.15;
       obScore = clamp(obScore, 0, 1);
+      obScore *= bias;
     }
     components.push({
       key: 'ob', label: 'Order Block', score: obScore, weight: 0.18,
@@ -420,12 +427,15 @@
       bull: 'Order block rialzista non mitigato sotto il prezzo', bear: 'Order block ribassista non mitigato sopra il prezzo'
     });
 
-    // fair value gap fresco in direzione
+    // fair value gap fresco in direzione (stessa regola del segno dell'order
+    // block: la zona trovata sostiene la tesi di struttura, quindi riceve il
+    // segno del bias)
     const fvgNear = nearestZone(fvgs, dirKind, price, atr, 6, side);
     let fvgScore = 0;
     if (fvgNear) {
       fvgScore = (fvgNear.zone.status === 'fresh' ? 1 : 0.55) * (1 - Math.min(1, fvgNear.distAtr / 6)) + 0.1;
       fvgScore = clamp(fvgScore, 0, 1);
+      fvgScore *= bias;
     }
     components.push({
       key: 'fvg', label: 'Fair Value Gap', score: fvgScore, weight: 0.12,
@@ -529,7 +539,7 @@
           ms.consecutive + ' rotture consecutive nella stessa direzione.' : '.')
     });
     reasons.push({
-      tone: bias === 1 ? 'bull' : 'bear',
+      tone: range.inDiscount ? 'bull' : 'bear',
       text: 'Prezzo al ' + (range.position * 100).toFixed(0) + '% del range di riferimento ' +
         range.low.toFixed(instrument.digits) + ' - ' + range.high.toFixed(instrument.digits) +
         ': ' + (range.inDiscount ? 'zona di sconto, favorevole agli acquisti' : 'zona di premio, favorevole alle vendite') +

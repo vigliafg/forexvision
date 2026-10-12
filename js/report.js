@@ -26,6 +26,9 @@
   /* Glossario: i termini tecnici usati nel report, spiegati in breve.   */
   /* ------------------------------------------------------------------ */
   const GLOSSARY = [
+    { term: 'COT', text: 'Commitments of Traders: il report settimanale della CFTC, il regolatore USA dei mercati a termine. Dichiarà quante posizioni lunghe e corte tengono le diverse categorie di operatori (fra cui gli operatori finanziari non-commerciali).' },
+    { term: 'VIX', text: 'Indice che misura quanto costa proteggersi dalle oscillazioni dell\'indice S&P 500: quando sale, il mercato ha paura. Serve da termometro del rischio (risk-on / risk-off).' },
+    { term: 'Indice del dollaro (DXY)', text: 'Il valore del dollaro USA misurato contro un paniere di altre valute importanti. Se sale, il dollaro è forte rispetto al paniere.' },
     { term: 'ATR', text: 'Average True Range: l\'ampiezza media dei movimenti di una candela. Serve a capire se il mercato si muove molto o poco rispetto al solito.' },
     { term: 'ADX', text: 'Indicatore da 0 a 100 che misura quanto è forte una tendenza, non in quale direzione va. Sopra 25 il movimento è direzionale, sotto 20 il mercato è incerto.' },
     { term: 'RSI', text: 'Indicatore da 0 a 100 che confronta la forza dei rialzi con quella dei ribassi. Sopra 70 il mercato è "surriscaldato", sotto 30 è "scarico".' },
@@ -68,7 +71,8 @@
     'order block', 'fair value gap', 'liquidità', 'sweep', 'premio', 'sconto',
     'OTE', 'sentiment', 'risk-on', 'risk-off', 'stop loss', 'obiettivo',
     'rischio/rendimento', 'confluenza', 'volatilità', 'pip', 'candela',
-    'orizzonte', 'backtest', 'hit rate', 'drawdown', 'struttura'
+    'orizzonte', 'backtest', 'hit rate', 'drawdown', 'struttura',
+    'COT', 'VIX', 'dollaro'
   ];
 
   /* ------------------------------------------------------------------ */
@@ -342,40 +346,117 @@
         'favorisce il rischio o la prudenza.'
     });
 
-    const st = sen.strength.list;
-    push({
-      type: 'p',
-      text: 'Guardando tutte le coppie disponibili, le valute più forti sono ' +
-        st.slice(0, 3).map(function (x) { return x.currency + ' (' + x.score.toFixed(0) + '/100)'; }).join(', ') +
-        ', mentre le più deboli sono ' + st.slice(-3).map(function (x) { return x.currency + ' (' + x.score.toFixed(0) + '/100)'; }).join(', ') +
-        '. Per il cambio che stiamo guardando conta il confronto fra le due valute che lo compongono: ' +
-        sen.pair.base + ' è a ' + sen.strength.byCurrency[sen.pair.base].score.toFixed(0) + '/100 e ' +
-        sen.pair.quote + ' a ' + sen.strength.byCurrency[sen.pair.quote].score.toFixed(0) + '/100, quindi ' +
-        (sen.strength.byCurrency[sen.pair.base].score > sen.strength.byCurrency[sen.pair.quote].score
-          ? 'la prima è più forte della seconda e questo sostiene le quotazioni.'
-          : 'la seconda è più forte della prima e questo pesa sulle quotazioni.') +
-        ' La forza è misurata sui movimenti delle ultime 5, 20 e 60 candele.'
-    });
-
-    if (sen.retail) {
+    if (sen.real) {
+      /* ---- sezione sentiment su dati reali (CFTC COT + VIX + DXY) ---- */
       push({
         type: 'p',
-        text: 'Dalla parte dei piccoli investitori risulta il ' + sen.retail.longPct.toFixed(0) + '% di posizioni al rialzo e il ' +
-          sen.retail.shortPct.toFixed(0) + '% al ribasso (su circa ' + sen.retail.accounts.toLocaleString('it-IT') + ' conti). ' +
-          'Quando la folla è molto sbilanciata da una parte si legge al contrario, perché di solito la maggioranza ha torto: ' +
-          sen.retail.contrarianText + '. Nota: questo dato è un modello simulato, non arriva da un broker reale.'
+        text: 'Questo studio di sentiment usa fonti reali e autorevoli: il posizionamento degli operatori ' +
+          'finanziari dal report COT della CFTC (il regolatore degli futures USA; dati del ' + sen.scope.cotAsOf +
+          '), l\'indice della paura VIX (dato del ' + (sen.risk && sen.risk.asOf ? sen.risk.asOf : '') +
+          ') e l\'indice del dollaro DXY. Il pannello retail resta un modello simulato dichiarato ' +
+          'ed è escluso dal punteggio.'
+      });
+
+      const basePos = sen.strength.byCurrency[sen.pair.base];
+      const quotePos = sen.strength.byCurrency[sen.pair.quote];
+      if (basePos && quotePos) {
+        push({
+          type: 'p',
+          text: 'Posizionamento reale: ' + sen.pair.base + ' è al percentile ' + basePos.score.toFixed(0) +
+            '/100 della sua storia di posizionamento a 5 anni' +
+            (basePos.basis === 'COT' ? ' (netto ' + basePos.net.toFixed(1) + '% dell\'open interest)' : '') +
+            ', mentre ' + sen.pair.quote + ' è al percentile ' + quotePos.score.toFixed(0) +
+            (quotePos.basis === 'DXY' ? ' secondo l\'indice del dollaro' : ' (netto ' + quotePos.net.toFixed(1) + '% dell\'open interest)') +
+            '. ' + (basePos.score > quotePos.score
+              ? 'Il posizionamento di ' + sen.pair.base + ' è relativamente meno corto del solito: non pesa sulle quotazioni.'
+              : 'Il posizionamento di ' + sen.pair.quote + ' è relativamente meno corto del solito e questo pesa su ' + sen.pair.base + '.')
+        });
+        push({
+          type: 'p',
+          text: 'I flussi della settimana COT: il posizionamento netto su ' + sen.pair.base +
+            (basePos.change >= 0 ? ' è aumentato' : ' si è ridotto') + ' di ' +
+            Math.abs(basePos.change).toFixed(1) + ' punti, un segnale ' +
+            (basePos.change > 0.5 ? 'di acquisto istituzionale' : basePos.change < -0.5 ? 'di dismissione istituzionale' : 'sostanzialmente fermo') + '.'
+        });
+      }
+      if (sen.risk) {
+        push({
+          type: 'p',
+          text: 'L\'ambiente generale è "' + sen.risk.label + '" (' + sen.risk.score.toFixed(0) + '/100): il VIX vale ' +
+            sen.risk.vix.toFixed(1) + ', cioè il percentile ' + sen.risk.vixPercentile.toFixed(0) +
+            ' della sua distribuzione annua. ' + sen.risk.text +
+            ' La volatilità misurata è ' + sen.risk.volLabel + ' (VIX ' +
+            sen.risk.volRatio.toFixed(2) + ' volte la sua media delle ultime 50 sedute).'
+        });
+      }
+      const instReal = sen.institutional;
+      if (instReal && instReal.crowded && instReal.lightest) {
+        push({
+          type: 'p',
+          text: 'Posizionamento istituzionale reale (COT): la divisa con il posizionamento più esteso è ' +
+            instReal.crowded.currency + ' (percentile ' + instReal.crowded.net.toFixed(0) + ')' +
+            (instReal.crowded.extreme ? ', zona estrema: lettura contraria probabilmente favorevole a ' + sen.pair.base : '') +
+            '; la meno affollata è ' + instReal.lightest.currency + ' (percentile ' +
+            instReal.lightest.net.toFixed(0) + ').'
+        });
+      }
+    } else {
+      const st = sen.strength.list;
+      // Universo ridotto o misto: la classifica della forza va dichiarata per
+      // ciò che è. La condizione autorevole è l'esclusione dal verdetto
+      // (confluence.excluded), non il solo conteggio delle coppie reali:
+      // in modalità simulata completa il sentiment pesa comunque.
+      const sentimentExcluded = !!(c.excluded && c.excluded.indexOf('Sentiment') !== -1);
+      const mixedScope = !sentimentExcluded && sen.scope &&
+        sen.scope.realPairs >= 1 && sen.scope.simulatedPairs >= 1;
+      let strengthIntro;
+      if (sentimentExcluded) {
+        strengthIntro = 'Nota: il confronto di forza usa solo le coppie con dati reali (' +
+          sen.scope.realPairs + (sen.scope.realPairs === 1 ? ' coppia' : ' coppie') +
+          ' su ' + (sen.scope.realPairs + sen.scope.simulatedPairs) +
+          '), quindi la classifica è incompleta, le posizioni di mezzo sono parità ' +
+          'e il sentiment è escluso dal verdetto finale. Le valute risultate più forti sono ';
+      } else if (mixedScope) {
+        strengthIntro = 'Nota: il confronto di forza usa tutte le coppie, di cui ' +
+          sen.scope.realPairs + ' con dati reali e ' + sen.scope.simulatedPairs +
+          ' simulate. Le valute più forti sono ';
+      } else {
+        strengthIntro = 'Guardando tutte le coppie disponibili, le valute più forti sono ';
+      }
+      push({
+        type: 'p',
+        text: strengthIntro +
+          st.slice(0, 3).map(function (x) { return x.currency + ' (' + x.score.toFixed(0) + '/100)'; }).join(', ') +
+          ', mentre le più deboli sono ' + st.slice(-3).map(function (x) { return x.currency + ' (' + x.score.toFixed(0) + '/100)'; }).join(', ') +
+          '. Per il cambio che stiamo guardando conta il confronto fra le due valute che lo compongono: ' +
+          sen.pair.base + ' è a ' + sen.strength.byCurrency[sen.pair.base].score.toFixed(0) + '/100 e ' +
+          sen.pair.quote + ' a ' + sen.strength.byCurrency[sen.pair.quote].score.toFixed(0) + '/100, quindi ' +
+          (sen.strength.byCurrency[sen.pair.base].score > sen.strength.byCurrency[sen.pair.quote].score
+            ? 'la prima è più forte della seconda e questo sostiene le quotazioni.'
+            : 'la seconda è più forte della prima e questo pesa sulle quotazioni.') +
+          ' La forza è misurata sui movimenti delle ultime 5, 20 e 60 candele.'
+      });
+
+      if (sen.retail) {
+        push({
+          type: 'p',
+          text: 'Dalla parte dei piccoli investitori risulta il ' + sen.retail.longPct.toFixed(0) + '% di posizioni al rialzo e il ' +
+            sen.retail.shortPct.toFixed(0) + '% al ribasso (su circa ' + sen.retail.accounts.toLocaleString('it-IT') + ' conti). ' +
+            'Quando la folla è molto sbilanciata da una parte si legge al contrario, perché di solito la maggioranza ha torto: ' +
+            sen.retail.contrarianText + '. Nota: questo dato è un modello simulato, non arriva da un broker reale.'
+        });
+      }
+
+      push({
+        type: 'p',
+        text: 'L\'ambiente generale è "' + sen.risk.label + '" (' + sen.risk.score.toFixed(0) + '/100). ' + sen.risk.text + ' ' +
+          'La volatilità del mercato è ' + sen.risk.volLabel + ': le candele sono ' + sen.risk.volRatio.toFixed(2) +
+          ' volte la loro ampiezza media recente. ' +
+          'Gli investitori istituzionali risultano più esposti su ' + sen.institutional.crowded.currency +
+          ' (' + sen.institutional.crowded.net.toFixed(0) + '% di posizioni lunghe) e più leggeri su ' +
+          sen.institutional.lightest.currency + ' (' + sen.institutional.lightest.net.toFixed(0) + '%). Anche questo è un modello simulato.'
       });
     }
-
-    push({
-      type: 'p',
-      text: 'L\'ambiente generale è "' + sen.risk.label + '" (' + sen.risk.score.toFixed(0) + '/100). ' + sen.risk.text + ' ' +
-        'La volatilità del mercato è ' + sen.risk.volLabel + ': le candele sono ' + sen.risk.volRatio.toFixed(2) +
-        ' volte la loro ampiezza media recente. ' +
-        'Gli investitori istituzionali risultano più esposti su ' + sen.institutional.crowded.currency +
-        ' (' + sen.institutional.crowded.net.toFixed(0) + '% di posizioni lunghe) e più leggeri su ' +
-        sen.institutional.lightest.currency + ' (' + sen.institutional.lightest.net.toFixed(0) + '%). Anche questo è un modello simulato.'
-    });
 
     push({
       type: 'callout',
@@ -410,8 +491,11 @@
     push({
       type: 'p',
       text: 'Che cosa guardare per cambiare idea: l\'analisi tecnica verrebbe annullata oltre ' + px(a.stop) +
-        ', lo scenario SMC oltre ' + px(p.stop) + '. Il sentiment invece non si annulla con un livello preciso: cambia ' +
-        'quando la forza dell\'' + (sen.pair.base === 'USD' ? 'euro' : sen.pair.base) + ' smette di prevalere su quella della valuta opposta.'
+        ', lo scenario SMC oltre ' + px(p.stop) + '. Il sentiment invece non si annulla con un livello preciso: ' +
+        (sen.real
+          ? 'si aggiorna con il report COT della CFTC (ogni venerdì, dati di martedì) e con il regime del VIX.'
+          : 'cambia quando la forza dell\'' + (sen.pair.base === 'USD' ? 'euro' : sen.pair.base) +
+            ' smette di prevalere su quella della valuta opposta.')
     });
 
     /* ================= 6. La fonte dei dati ================= */
@@ -469,6 +553,9 @@
       generatedAt: new Date(),
       price: last.close,
       direction: c.direction,
+      // modalità dati: serve al piede del testo (i prezzi dichiarati simulati
+      // o reali devono coincidere con la sezione "La fonte dei dati")
+      sourceMode: (ctx.source && ctx.source.mode) || 'sim',
       blocks: blocks,
       glossary: GLOSSARY,
       trackedTerms: TRACKED_TERMS
@@ -518,8 +605,13 @@
     });
 
     lines.push(rule);
-    lines.push('Avvertenza: report a scopo didattico e dimostrativo. I prezzi sono');
-    lines.push('simulati e nessuna indicazione qui contenuta è una consulenza');
+    lines.push('Avvertenza: report a scopo didattico e dimostrativo. ' +
+      (r.sourceMode === 'real'
+        ? 'I prezzi sono reali, forniti da un servizio non ufficiale che può avere'
+        : 'I prezzi sono simulati e le prestazioni mostrate dal backtest non'));
+    lines.push(r.sourceMode === 'real'
+      ? 'ritardi o interruzioni. Nessuna indicazione qui contenuta è una consulenza'
+      : 'sono rappresentative di un conto reale. Nessuna indicazione qui');
     lines.push('finanziaria o una promessa di guadagno. Il trading comporta il');
     lines.push('rischio di perdere il capitale.');
     lines.push(rule);

@@ -242,6 +242,120 @@
     });
   }
 
+  /**
+   * Chiede al server lo stato del sentiment reale (CFTC COT + VIX + indice
+   * del dollaro). Valida le parti essenziali: senza COT il sentiment reale
+   * non esiste e l'errore torna al chiamante, che ripiega sul simulato.
+   * @param {string} symbol  coppia (default EUR/USD)
+   * @param {Object} opts  {force}
+   * @returns {Promise<Object>} payload del ponte
+   */
+  function loadSentiment(symbol, opts) {
+    opts = opts || {};
+    return probe().then(function (status) {
+      if (!status) throw new Error(state.lastError || 'server locale non raggiungibile');
+      const url = state.base + '/api/sentiment?symbol=' +
+        encodeURIComponent(symbol || 'EUR/USD') + (opts.force ? '&force=1' : '');
+      return fetchJson(url, LOAD_TIMEOUT);
+    }).then(function (payload) {
+      const checked = checkSentimentPayload(payload);
+      state.lastFetch = Date.now();
+      state.lastError = null;
+      return checked;
+    }).catch(function (err) {
+      state.lastError = err && err.message ? err.message : String(err);
+      throw err;
+    });
+  }
+
+  /** Controlla e ripulisce il payload del sentiment reale. */
+  function checkSentimentPayload(payload) {
+    if (!payload || payload.ok === false) {
+      throw new Error((payload && payload.error) || 'sentiment reale non disponibile');
+    }
+    const cot = payload.cot;
+    if (!cot || !cot.ok || !cot.contracts) {
+      throw new Error('report CFTC mancante o illeggibile');
+    }
+    const out = { cot: cot, vix: null, dxy: null };
+    // il COT resta integro: le righe sono gia' numeri interi con date crescenti
+    for (const cur in cot.contracts) {
+      const rows = (cot.contracts[cur] || {}).rows || [];
+      if (rows.length < 52) throw new Error('storico COT insufficiente per ' + cur);
+      for (const r of rows) {
+        if (!isFinitePositive(r.oi)) throw new Error('open interest illeggibile nel COT di ' + cur);
+      }
+    }
+    out.cot.asOf = cot.asOf || '';
+    out.cot.weeks = cot.weeks || 0;
+    if (payload.vix && payload.vix.ok && Array.isArray(payload.vix.candles) &&
+        payload.vix.candles.length >= 60) {
+      out.vix = {
+        level: Number(payload.vix.level),
+        asOf: payload.vix.asOf || '',
+        candles: payload.vix.candles
+          .map(function (c) { return { time: Number(c.time), close: Number(c.close) }; })
+          .filter(function (c) { return isFinite(c.time) && isFinite(c.close) && c.close > 0; }),
+        symbol: payload.vix.symbol || ''
+      };
+      if (out.vix.candles.length < 60) out.vix = null;
+    }
+    if (payload.dxy && payload.dxy.ok && Array.isArray(payload.dxy.candles) &&
+        payload.dxy.candles.length >= 60) {
+      out.dxy = {
+        level: Number(payload.dxy.level),
+        asOf: payload.dxy.asOf || '',
+        candles: payload.dxy.candles
+          .map(function (c) { return { time: Number(c.time), close: Number(c.close) }; })
+          .filter(function (c) { return isFinite(c.time) && isFinite(c.close) && c.close > 0; }),
+        symbol: payload.dxy.symbol || ''
+      };
+      if (out.dxy.candles.length < 60) out.dxy = null;
+    }
+    out.stale = !!payload.stale;
+    out.fetchedAt = payload.fetchedAt || Date.now();
+    out.provider = payload.provider || '';
+    return out;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Notizie e calendario                                               */
+  /* ------------------------------------------------------------------ */
+  /**
+   * Notizie e calendario economico dal ponte (RSS ForexLive/FXStreet/Fed/BCE
+   * + calendario ForexFactory filtrato per EUR/USD). Cache del ponte: 5 min.
+   * @param {Object} opts  {force}
+   * @returns {Promise<Object>} payload {news, calendar, feeds, ...}
+   */
+  function loadNews(opts) {
+    opts = opts || {};
+    return probe().then(function (status) {
+      if (!status) throw new Error(state.lastError || 'server locale non raggiungibile');
+      const url = state.base + '/api/news' + (opts.force ? '?force=1' : '');
+      return fetchJson(url, LOAD_TIMEOUT);
+    }).then(function (payload) {
+      if (!payload || payload.ok === false) {
+        throw new Error((payload && payload.error) || 'notizie non disponibili');
+      }
+      const now = Date.now();
+      payload.news = (payload.news || []).filter(function (n) {
+        return typeof n.time === 'number' && isFinite(n.time) &&
+               typeof n.title === 'string' && n.title.trim();
+      });
+      payload.calendar = (payload.calendar || []).filter(function (e) {
+        return typeof e.time === 'number' && isFinite(e.time) &&
+               typeof e.title === 'string' && e.title.trim();
+      });
+      payload.fetchedAt = payload.fetchedAt || now;
+      payload.stale = !!payload.stale;
+      payload.feeds = Array.isArray(payload.feeds) ? payload.feeds : [];
+      return payload;
+    }).catch(function (err) {
+      state.lastError = err && err.message ? err.message : String(err);
+      throw err;
+    });
+  }
+
   /* ------------------------------------------------------------------ */
   /* Aggiornamento periodico                                            */
   /* ------------------------------------------------------------------ */
@@ -290,6 +404,8 @@
     TF_FALLBACK: TF_FALLBACK,
     probe: probe,
     load: load,
+    loadSentiment: loadSentiment,
+    loadNews: loadNews,
     startPolling: startPolling,
     stopPolling: stopPolling,
     msToNextPoll: msToNextPoll,

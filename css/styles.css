@@ -136,8 +136,7 @@ select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(61,139,253,.18
 .plan{background:rgba(9,14,22,.6);border:1px solid var(--line);border-radius:12px;padding:12px}
 .plan-row{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:.82rem;border-bottom:1px dashed rgba(34,48,74,.7)}
 .plan-row:last-of-type{border-bottom:0}
-.reasons{list-style:none;margin:14px 0 0;padding:0;display:grid;gap:7px}
-.reasons li{
+.reasons{list-style:none;margin:14px 0 0;padding:0;display:grid;gap:7px}.reasons li{
   display:flex;gap:9px;align-items:flex-start;font-size:.8rem;
   background:rgba(9,14,22,.5);border:1px solid var(--line);border-left-width:3px;border-radius:8px;padding:7px 10px;
 }
@@ -374,6 +373,51 @@ select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(61,139,253,.18
 .rep-glossary{margin:0}
 .rep-glossary dt{font-weight:700;color:#dcb6ff;font-size:.82rem;margin-top:11px}
 .rep-glossary dd{margin:3px 0 0;font-size:.82rem;line-height:1.68;color:#b9c9de;max-width:78ch}
+
+/* ---------- banda sentiment + notizie affiancate ---------- */
+.news-band{
+  display:grid;grid-template-columns:minmax(340px,1.05fr) minmax(320px,.95fr);
+  gap:16px;margin:16px auto 0;padding:0 18px;max-width:1560px
+}
+@media(max-width:1150px){.news-band{grid-template-columns:1fr}}
+.news-card .mini-title{margin-top:16px}
+.news-card .mini-title:first-of-type{margin-top:4px}
+
+/* calendario eventi */
+.calendar-list{list-style:none;margin:0;padding:0;display:grid;gap:5px;
+  max-height:250px;overflow-y:auto;font-size:.76rem}
+.calendar-list li{
+  display:grid;grid-template-columns:auto 34px 1fr auto;gap:8px;align-items:center;
+  padding:5px 8px;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.05);
+  border-radius:5px}
+.calendar-list li.past{opacity:.45}
+.calendar-list li.next{border-left:3px solid #d9a34a}
+.calendar-list .impact{
+  font-family:var(--mono);font-size:.66rem;font-weight:700;text-align:center;
+  padding:2px 6px;border-radius:3px}
+.calendar-list .impact.high{background:rgba(224,90,90,.25);color:#ff9d9d}
+.calendar-list .impact.med{background:rgba(217,163,74,.22);color:#e8c47d}
+.calendar-list .impact.low{background:rgba(120,140,170,.18);color:#9fb1c9}
+.calendar-list .ccy{font-family:var(--mono);color:var(--dim)}
+.calendar-list .when{font-family:var(--mono);color:#8ea3bd;text-align:right}
+.calendar-list .count{color:#d9a34a;font-weight:700}
+
+/* notizie */
+.news-list{list-style:none;margin:0;padding:0;display:grid;gap:5px;
+  max-height:340px;overflow-y:auto;font-size:.76rem}
+.news-list li{
+  display:grid;grid-template-columns:auto auto 1fr;gap:8px;align-items:baseline;
+  padding:6px 8px;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.05);
+  border-radius:5px}
+.news-list li.relevant{border-left:3px solid #5a8fd0}
+.news-list .nsrc{
+  font-family:var(--mono);font-size:.64rem;color:#9fb1c9;background:rgba(120,140,170,.15);
+  padding:2px 5px;border-radius:3px;white-space:nowrap}
+.news-list .nsrc.bank{background:rgba(90,143,208,.25);color:#a9c9ef}
+.news-list .ntime{font-family:var(--mono);font-size:.66rem;color:var(--dim)}
+.news-list a{color:#cdd8e6;text-decoration:none}
+.news-list a:hover{color:#fff;text-decoration:underline}
+.news-list .flag{font-size:.62rem;color:#5a8fd0;font-weight:700}
 
 /* Stampa: si stampa soltanto il report, in bianco e nero leggibile */
 @media print{
