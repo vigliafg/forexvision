@@ -259,6 +259,28 @@
     w.dispatchEvent(new w.Event('resize'));
     log(canvasHasContent($('#chart'), doc), 'Grafico ridisegnato dopo un resize');
 
+    // 6b. navigazione a tab
+    log($$('.tab-panel').length === 6 && $$('#tabbar .tab').length === 6,
+      'Sei aree organizzate a tab presenti', $$('#tabbar .tab').map(function (t) { return t.textContent.trim(); }).join(' | '));
+    log($('#tab-dash').classList.contains('active') && !$('#tab-grafici').classList.contains('active'),
+      'Il dashboard è la tab attiva all\u2019avvio');
+    log($$('#dashLadder .step').length >= 4 && $('#dashSpark').width > 0 && $$('#dashEvent .kpi').length >= 1,
+      'Cruscotto con scala operativa, sparkline e prossimo evento',
+      $$('#dashLadder .step').length + ' livelli \u00b7 ' + $$('#dashEvent .kpi').length + ' kpi evento');
+    log($$('#indBlock .gauge-tile').length >= 9 && !!$('.ind-detail'),
+      'Analisi tecnica: griglia di gauge e dettaglio numerico ripiegato',
+      $$('#indBlock .gauge-tile').length + ' tile');
+    $$('#tabbar .tab').filter(function (t) { return t.dataset.panel === 'tab-smc'; })[0].click();
+    log($('#tab-smc').classList.contains('active') && $$('#liqMap .liq-row').length > 0 &&
+      $$('#smcLadder .step').length >= 4 && $$('#structTimeline .ev').length > 0,
+      'Il cambio tab mostra il pannello SMC completo',
+      $$('#liqMap .liq-row').length + ' livelli \u00b7 ' + $$('#structTimeline .ev').length + ' eventi in finestra');
+    log(canvasHasContent($('#chart'), doc), 'Il grafico resta disegnato in tab nascosta');
+    $$('#tabbar .tab').filter(function (t) { return t.dataset.panel === 'tab-grafici'; })[0].click();
+    log(canvasHasContent($('#chart'), doc), 'Ridisegno del grafico al ritorno nella tab grafici');
+    $$('#tabbar .tab').filter(function (t) { return t.dataset.panel === 'tab-dash'; })[0].click();
+
+
     // 7. report in linguaggio semplice
     log(!!$('#reportBtn') && !!$('#confReportBtn'), 'Pulsanti di apertura del report presenti');
     log($('#reportOverlay').classList.contains('hidden'), 'Finestra del report chiusa all\u2019avvio');

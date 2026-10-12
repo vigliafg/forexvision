@@ -53,9 +53,67 @@
   </div>
 </header>
 
-<main class="layout">
+<main class="tabs-host">
 
-  <!-- ============ COLONNA CENTRALE ============ -->
+<nav class="tabbar" id="tabbar">
+  <button class="tab active" data-panel="tab-dash">&#127968; Dashboard</button>
+  <button class="tab" data-panel="tab-grafici">&#128200; Grafici</button>
+  <button class="tab" data-panel="tab-tecnica">&#128300; Analisi tecnica</button>
+  <button class="tab" data-panel="tab-smc">&#129504; SMC</button>
+  <button class="tab" data-panel="tab-notizie">&#127777; Sentiment e notizie</button>
+  <button class="tab" data-panel="tab-registro">&#128220; Registro</button>
+</nav>
+
+<!-- ===================== TAB DASHBOARD ===================== -->
+<section class="tab-panel active" id="tab-dash">
+
+    <div class="card verdict-hero">
+      <div class="card-head">
+        <h2>Verdetto d’insieme</h2>
+        <span class="dim" id="confStamp">tecnico &middot; SMC &middot; sentiment</span>
+      </div>
+      <div class="conf-grid" id="confGrid"></div>
+      <div id="confVerdict" class="conf-verdict"></div>
+      <div class="conf-cta">
+        <button id="confReportBtn" class="btn btn-ghost">&#128196; Leggi il report completo in linguaggio semplice</button>
+        <span class="dim">spiega il quadro attuale, le previsioni dei tre studi e il significato di ogni termine</span>
+      </div>
+    
+
+  <div class="dash-duo">
+    <div class="card">
+      <div class="card-head"><h2>Prezzo e moto recente</h2><span class="dim" id="dashSparkStamp">last 40 barre</span></div>
+      <canvas id="dashSpark" class="macd-strip" style="height:64px"></canvas>
+      <div class="kpi-row" id="dashPriceKpi"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Scala operativa</h2><span class="dim">da piano tecnico e SMC</span></div>
+      <div class="ladder" id="dashLadder"></div>
+    </div>
+  </div>
+
+  <div class="dash-duo">
+    <div class="card">
+      <div class="card-head"><h2>Tre modelli a confronto</h2><span class="dim">score normalizzato -1 / +1</span></div>
+      <div class="gauge-grid" id="dashDials"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Prossimo evento ad alto impatto</h2><span class="dim">dal calendario</span></div>
+      <div id="dashEvent" class="kpi-row"></div>
+      <p class="note small" id="dashEventNote" style="display:none"></p>
+    </div>
+  </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Watchlist</h2><span class="dim">segnale sintetico</span></div>
+      <ul class="watchlist" id="watchlist"></ul>
+    </div>
+
+</section>
+
+<!-- ===================== TAB GRAFICI ===================== -->
+<section class="tab-panel" id="tab-grafici">
+<div class="layout">
   <section class="col-main">
 
     <div class="card chart-card">
@@ -83,6 +141,46 @@
         <span class="dim">Ora di sistema: <b id="clock" class="mono"></b></span>
       </div>
     </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Proiezione probabilistica</h2>
+        <span class="dim" id="fcHorizonLabel"></span>
+      </div>
+      <div class="fc-summary" id="fcSummary"></div>
+      <div class="fc-levels" id="fcLevels"></div>
+    </div>
+
+  </section>
+  <aside class="col-side">
+
+    <div class="card">
+      <div class="card-head"><h2>Backtest storico</h2><span class="dim">ultime 250 candele</span></div>
+      <div class="stats" id="btStats"></div>
+      <canvas id="equity" class="equity-canvas"></canvas>
+      <p class="note">Risultati misurati su serie <b>simulate</b>. Il generatore contiene regimi di
+        tendenza persistenti, quindi il modello appare pi&ugrave; efficace di quanto sarebbe su prezzi reali,
+        dove un hit rate vicino al 50% &egrave; la norma. Nessun valore qui riportato &egrave; una promessa di rendimento.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Contesto di mercato</h2></div>
+      <ul class="context" id="contextList"></ul>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Contesto di mercato</h2></div>
+      <ul class="context" id="contextList"></ul>
+    </div>
+
+  </aside>
+</div>
+</section>
+
+<!-- ===================== TAB ANALISI TECNICA ===================== -->
+<section class="tab-panel" id="tab-tecnica">
+<div class="layout">
+  <section class="col-main">
 
     <div class="card">
       <div class="card-head">
@@ -116,18 +214,25 @@
       <ul id="reasonList" class="reasons"></ul>
     </div>
 
+  </section>
+  <aside class="col-side">
+
     <div class="card">
-      <div class="card-head">
-        <h2>Confluenza dei modelli</h2>
-        <span class="dim" id="confStamp">tecnico &middot; SMC &middot; sentiment</span>
-      </div>
-      <div class="conf-grid" id="confGrid"></div>
-      <div id="confVerdict" class="conf-verdict"></div>
-      <div class="conf-cta">
-        <button id="confReportBtn" class="btn btn-ghost">&#128196; Leggi il report completo in linguaggio semplice</button>
-        <span class="dim">spiega il quadro attuale, le previsioni dei tre studi e il significato di ogni termine</span>
-      </div>
+      <div class="card-head"><h2>Indicatori tecnici</h2></div>
+      <div class="gauge-grid" id="indBlock"></div>
+      <details class="ind-detail"><summary>dettaglio numerico</summary>
+      <table class="ind-table" id="indTable">
+        <tbody></tbody>
+      </table>
+      </details>
     </div>
+
+  </aside>
+</div>
+</section>
+
+<!-- ===================== TAB SMC ===================== -->
+<section class="tab-panel" id="tab-smc">
 
     <div class="card">
       <div class="card-head">
@@ -168,55 +273,30 @@
         </div>
       </div>
 
+      <div class="dash-duo">
+        <div>
+          <h3 class="mini-title">Mappa della liquidit&agrave;</h3>
+          <div class="liq-map" id="liqMap"></div>
+        </div>
+        <div>
+          <h3 class="mini-title">Scala operativa <span class="dim">entry, stop, obiettivi</span></h3>
+          <div class="ladder" id="smcLadder"></div>
+        </div>
+      </div>
+
+      <h3 class="mini-title">Eventi di struttura <span class="dim">finestra di 50 barre</span></h3>
+      <div class="struct-timeline" id="structTimeline"></div>
+
       <div class="smc-plan" id="smcPlan"></div>
       <ul id="smcReasons" class="reasons"></ul>
     </div>
 
-    <div class="card">
-      <div class="card-head">
-        <h2>Proiezione probabilistica</h2>
-        <span class="dim" id="fcHorizonLabel"></span>
-      </div>
-      <div class="fc-summary" id="fcSummary"></div>
-      <div class="fc-levels" id="fcLevels"></div>
-    </div>
+</section>
 
-  </section>
+<!-- ===================== TAB SENTIMENT E NOTIZIE ===================== -->
+<section class="tab-panel" id="tab-notizie">
+<div class="news-band">
 
-  <!-- ============ COLONNA LATERALE ============ -->
-  <aside class="col-side">
-
-    <div class="card">
-      <div class="card-head"><h2>Indicatori tecnici</h2></div>
-      <table class="ind-table" id="indTable">
-        <tbody></tbody>
-      </table>
-    </div>
-
-    <div class="card">
-      <div class="card-head"><h2>Watchlist</h2><span class="dim">segnale sintetico</span></div>
-      <ul class="watchlist" id="watchlist"></ul>
-    </div>
-
-    <div class="card">
-      <div class="card-head"><h2>Backtest storico</h2><span class="dim">ultime 250 candele</span></div>
-      <div class="stats" id="btStats"></div>
-      <canvas id="equity" class="equity-canvas"></canvas>
-      <p class="note">Risultati misurati su serie <b>simulate</b>. Il generatore contiene regimi di
-        tendenza persistenti, quindi il modello appare pi&ugrave; efficace di quanto sarebbe su prezzi reali,
-        dove un hit rate vicino al 50% &egrave; la norma. Nessun valore qui riportato &egrave; una promessa di rendimento.</p>
-    </div>
-
-    <div class="card">
-      <div class="card-head"><h2>Contesto di mercato</h2></div>
-      <ul class="context" id="contextList"></ul>
-    </div>
-
-  </aside>
-</main>
-
-<!-- ============ BANDA SENTIMENT + NOTIZIE (affiancate) ============ -->
-<section class="news-band">
 
   <div class="card">
     <div class="card-head">
@@ -274,7 +354,13 @@
     <p class="note small" id="newsNote" style="display:none"></p>
   </div>
 
+
+
+</div>
 </section>
+
+<!-- ===================== TAB REGISTRO ===================== -->
+<section class="tab-panel" id="tab-registro">
 
 <section class="card journal">
   <div class="card-head">
@@ -296,6 +382,9 @@
     </table>
   </div>
 </section>
+
+</section>
+</main>
 
 <footer class="foot">
   <p><b>Avvertenza:</b> strumento didattico. Le previsioni derivano da modelli statistici su serie
@@ -338,6 +427,7 @@
 <script src="js/report.js"></script>
 <script src="js/feed.js"></script>
 <script src="js/chart.js"></script>
+<script src="js/ui.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

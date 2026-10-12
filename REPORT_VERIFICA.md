@@ -710,3 +710,51 @@ empiricamente prima dell'integrazione.
 ### Suite
 
 **selfcheck 113/113, live 32/32, smoke 105/105** — nessun errore JavaScript.
+
+---
+
+## 14. Riorganizzazione dell'interfaccia: 6 aree a tab + indicatori grafici (12/10/2026)
+
+Tre topolino firme realizzate come da progetto condiviso prima dell'implementazione:
+**raggruppamento** in aree omogenee (tab), **trasformazione** di indicatori numerici
+in rappresentazioni grafiche, **bottone report** conservato nell'header (azione
+globale di overlay) con la CTA esistente rinominata dentro il cruscotto.
+
+### Layout: 6 tab
+
+| Tab | Contenuto (card spostate, id invariati) |
+|---|---|
+| 🏠 Dashboard | Verdetto d'insieme (card confluenza rinominata, dominante) · Prezzo e moto recente (sparkline + KPI) · Scala operativa (ladder tecnico+SMC) · Tre modelli a confronto (3 dial a -1/+1) · Prossimo evento ad alto impatto (con countdown) · Watchlist |
+| 📈 Grafici | Grafico a candele (tutti i layer) · Proiezione probabilistica · Backtest storico con equity · Contesto di mercato |
+| 🔬 Analisi tecnica | Segnale operativo completo · Indicatori in gauge grafiche (con tabella numerica ripiegata in `<details>`) |
+| 🧮 SMC | Struttura, range, zone · **nuove** mappa della liquidità, scala operativa con zone rischio/guadagno, timeline eventi (finestra 50 barre) · piano e motivazioni |
+| 🌡 Sentiment e notizie | La banda affiancata esistente (sentiment reale + news/calendar) |
+| 📜 Registro | Registro operazioni virtuali |
+
+Tecniche chiave: gli elementi dotati di id sono stati **spostati, non ricreati** —
+tutti i renderer (`renderSentiment`, `renderSmc`, `renderIndicators`, …) continuano
+a scrivere sugli stessi id; il tab manager (`js/ui.js`, nuovo modulo di
+presentazione, zero dipendenze) gestisce persistenza (`localStorage`), supporto
+`?tab=` per test e screenshot, e richiede il ridisegno dei canvas all'attivazione
+di ogni tab (`repaintPanels()`). I canvas nascosti si disegnano a fallback
+(800ch) così i pixel-check delle suite restano affidabili anche a tab inattiva.
+
+### Trasformazioni numerico → grafico
+
+- Tabella indicatori → **griglia di gauge**: 3 dial SVG a zone colorate (RSI,
+  Stochastic, ADX con soglie 30/70, 20/80, 20/25/60), pila EMA grafica
+  (distanza prezzo-media), meter a zone con cursore (%B su -0,25…1,25, ATRratio
+  vs media 50, volumi, ROC, bias SMA200) e **istogramma MACD** su canvas
+  (30 barre); il dettaglio numerico resta in tabella ripiegata.
+- Dashboard: **ladder entry/stop/TP** con zona perdita/guadagno colorata,
+  **sparkline** delle ultime 40 barre, **tre dial** dei modelli sulla scala -1/+1,
+  **riquadro countdown** del prossimo evento.
+- SMC: **mappa della liquidità** (barre sopra/sotto prezzo, colore per stato
+  presa/sweep/intatta) e **timeline BOS/CHoCH** su finestra 50 barre.
+
+### Verifiche
+
+- Screenshot di tutte le tab su dati reali (dashboard, grafici — con ridisegno
+  corretto del canvas alla commutazione — analisi tecnica, SMC, sentiment e notizie).
+- Suite aggiornate ed esaustive: **selfcheck 113/113**, **smoke 112/112** (+7
+  controlli tab/cruscotto/gauge/ridisegno), **live 32/32**. Nessun errore JS.

@@ -90,13 +90,16 @@
     refresh(true).then(function () {
       renderWatchlist();
       startFeedPolling();
-      fetchNews().then(function () { renderNews(); });
+      fetchNews().then(function () { renderNews(); renderDashboard(); });
     });
+    // il grafico/partitura vive in tab che possono essere nascostre:
+    // il gestore tab richiede il ridisegno all'attivazione
+    Ui.Tabs.init(function () { repaintPanels(); });
 
     // Notizie e calendario: il ponte tiene una cache di 5 minuti, quindi un
     // ciclo di 5 minuti è la cadenza giusta (indipendente dai dati candele).
     setInterval(function () {
-      fetchNews().then(function (ok) { if (ok) renderNews(); });
+      fetchNews().then(function (ok) { if (ok) { renderNews(); renderDashboard(); } });
     }, 5 * 60 * 1000);
 
     // collegamento diretto: index.html#report apre subito il report
@@ -199,9 +202,18 @@
     });
 
     window.addEventListener('resize', function () {
-      chart.draw();
-      drawBacktestChart();
+      repaintPanels();
     });
+  }
+
+  /** Ridisegna tutti i canvas, anche quelli in tab nascoste (le quali non
+   *  hanno larghezza da layout: si disegna a fallback e, all'attivazione della
+   *  tab, il callback dei Tabs lo richiama con la dimensione reale). */
+  function repaintPanels() {
+    chart.draw();
+    drawBacktestChart();
+    drawMacdStrip();
+    drawDashSpark();
   }
 
   /* ------------------------------ dati + analisi ------------------------------ */
@@ -281,9 +293,12 @@
     btTimer = setTimeout(function () {
       state.backtest = F.backtest(state.series.candles, state.instrument, state.horizon, { window: 250 });
       renderBacktest();
+      repaintPanels();
     }, 30);
 
     chart.setData(state.series, state.analysis, state.instrument, state.smc);
+    renderDashboard();
+    repaintPanels();
     renderHeader();
     renderSignal();
     renderConfluence();
@@ -618,6 +633,8 @@
     recomputeSentiment();
 
     chart.setData(state.series, state.analysis, inst, state.smc);
+    renderDashboard();
+    repaintPanels();
     renderHeader();
     renderSignal();
     renderConfluence();
@@ -701,33 +718,321 @@
     return '<span class="tag flat">NEUTRO</span>';
   }
 
+  /* -------------------- dashboard: scala, sparkline, evento -------------------- */
+  function renderDashboard() {
+    const a = state.analysis;
+    const s = state.smc;
+    const sen = state.sentiment;
+    const inst = state.instrument;
+    if (!a || !s || !inst || !state.series) return;
+
+    // scala operativa: piano tecnico + piano SMC su uno stesso asse di prezzo
+    const items = [];
+    const seen = {};
+    function step(price, label, text, cls) {
+      const key = price.toFixed(inst.digits);
+      if (seen[key]) return;
+      seen[key] = true;
+      items.push({ price: price, label: label, text: text, cls: cls });
+    }
+    step(a.price, 'Prezzo attuale', a.price.toFixed(inst.digits), 'entry');
+    step(a.stop, 'Stop tecnico', a.stop.toFixed(inst.digits), 'sl');
+    step(a.target, 'Obiettivo tecnico', a.target.toFixed(inst.digits), 'tp');
+    if (s.plan) {
+      step(s.plan.stop, 'Invalidazione SMC', s.plan.stop.toFixed(inst.digits), 'extra');
+      step(s.plan.tp1, 'TP1 \u2013 equilibrio', s.plan.tp1.toFixed(inst.digits), 'extra');
+      step(s.plan.tp2, 'Liquidit\u00e0 (TP2)', s.plan.tp2.toFixed(inst.digits), 'tp2');
+    }
+    // la zona rossa copre la distanza prezzo-stop, la verde il verso l'obiettivo
+    Ui.ladder($('dashLadder'), items, {
+      risk: [a.price, a.stop],
+      gain: [a.price, a.target]
+    });
+
+    // sparkline del moto recente + kpi di contesto
+    const candles = state.series.candles;
+    const closes = candles.slice(-40).map(function (cn) { return cn.close; });
+    const tone = a.direction === 'BUY' ? '#18c98a' : a.direction === 'SELL' ? '#f2555a' : '#5a8fd0';
+    Ui.spark($('dashSpark'), closes, tone);
+    const prev = candles[candles.length - Math.min(21, candles.length - 1)].close;
+    const chg = (a.price - prev) / prev * 100;
+    const regime = a.trendRegime > 0.6 ? 'Trend' : a.trendRegime < 0.3 ? 'Laterale' : 'Misto';
+    $('dashPriceKpi').innerHTML = [
+      { k: 'Prezzo', v: a.price.toFixed(inst.digits), tone: '' },
+      { k: 'Su 20 candele', v: signed(chg, 2) + '%', tone: chg >= 0 ? 'pos' : 'neg' },
+      { k: 'ATR %', v: a.atrPct.toFixed(2) + '%', tone: '' },
+      { k: 'Regime', v: regime, tone: '' }
+    ].map(function (t) {
+      return '<div class="kpi"><div class="k">' + t.k + '</div><div class="v ' + t.tone + '">' + t.v + '</div></div>';
+    }).join('');
+
+    // tre modelli con la stessa scala -1/+1
+    const dial = function (score, label, kind) {
+      const col = score >= 0.12 ? '#18c98a' : score <= -0.12 ? '#f2555a' : '#5a8fd0';
+      return '<div class="gauge-tile">' +
+        Ui.dialSvg(score, -1, 1, [
+          { from: -1, to: 0, color: '#f2555a' },
+          { from: 0, to: 1, color: '#18c98a' }
+        ], col) +
+        '<div class="gt-v">' + signed(score, 2) + '</div>' +
+        '<div class="gt-l">' + label + '</div>' +
+        '</div>';
+    };
+    $('dashDials').innerHTML =
+      dial(a.score, 'Analisi tecnica') +
+      dial(s.score, 'Smart Money Concepts') +
+      dial(sen ? sen.score : 0, 'Sentiment');
+
+    renderDashEvent();
+  }
+
+  /** Prossimo evento ad alto impatto dal calendario del ponte. */
+  function renderDashEvent() {
+    const box = $('dashEvent'), note = $('dashEventNote');
+    if (!box) return;
+    const cal = (state.news && state.news.calendar) || [];
+    const now = Date.now();
+    const ev = cal.filter(function (e) {
+      return e.time >= now;
+    })[0];
+    if (!ev) {
+      box.innerHTML = '<div class="kpi"><div class="k">Agenda</div><div class="v">\u2014</div></div>';
+      if (note) {
+        note.style.display = '';
+        note.textContent = state.news
+          ? 'Nessun evento in arrivo questa settimana nel calendario pertinente.'
+          : 'Calendario ancora in caricamento dal ponte\u2026';
+      }
+      return;
+    }
+    const when = new Date(ev.time);
+    const ms = ev.time - now;
+    const h = Math.floor(ms / 3600000), m = Math.round((ms % 3600000) / 60000);
+    const impact = ev.impact === 'High' ? 'neg' : 'neu';
+    box.innerHTML =
+      '<div class="kpi"><div class="k">Evento</div><div class="v" style="font-size:.8rem">' + ev.title + '</div></div>' +
+      '<div class="kpi"><div class="k">Impatto</div><div class="v ' + impact + '">' + ev.impact + ' \u00b7 ' + ev.country + '</div></div>' +
+      '<div class="kpi"><div class="k">Data</div><div class="v" style="font-size:.8rem">' +
+      when.toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) + '</div></div>' +
+      '<div class="kpi"><div class="k">Countdown</div><div class="v">' +
+      (h > 0 ? h + 'h' + (m ? ' ' + m + 'm' : '') : m + 'm') + '</div></div>';
+    if (note) {
+      note.style.display = '';
+      note.textContent = 'Fonte: calendario ForexFactory (mirror faireconomy.media). ' +
+        (ev.forecast ? 'Ateso ' + ev.forecast + ', ' : '') +
+        (ev.previous ? 'precedente ' + ev.previous + '.' : '');
+    }
+  }
+
+  function drawDashSpark() {
+    if (!state.series) return;
+    const closes = state.series.candles.slice(-40).map(function (c) { return c.close; });
+    const a = state.analysis;
+    const tone = a && a.direction === 'BUY' ? '#18c98a' : a && a.direction === 'SELL' ? '#f2555a' : '#5a8fd0';
+    Ui.spark($('dashSpark'), closes, tone);
+  }
+
+  function drawMacdStrip() {
+    const a = state.analysis;
+    if (!a || !a.indicators) return;
+    const hist = a.indicators.macd.histogram.slice(-30);
+    Ui.histogram($('macdHist'), hist);
+  }
+
+  function renderDashEventDone() {}
+
   function renderIndicators() {
     const a = state.analysis;
     const ind = a.indicators;
     const inst = state.instrument;
     const i = a.index;
-    const rows = [];
+    const c = ind.closes[i];
+    const d = inst.digits;
+    const tiles = [];
 
+    /* pila delle medie: grafica sopra/sotto il prezzo */
+    const stack = [
+      ['EMA 9', ind.ema9[i]], ['EMA 21', ind.ema21[i]],
+      ['EMA 50', ind.ema50[i]], ['SMA 200', ind.sma200[i]]
+    ].filter(function (r) { return r[1] != null; });
+    const vals = stack.map(function (r) { return r[1]; }).concat([c]);
+    const dMin = Math.min.apply(null, vals), dMax = Math.max.apply(null, vals);
+    const span = (dMax - dMin) || c * 1e-6;
+    const emaRows = stack.map(function (r) {
+      const above = c >= r[1];
+      const bw = Ui.clamp(Math.abs(c - r[1]) / span * 1.05, 0.05, 1) * 100;
+      return '<div class="ema-row ' + (above ? 'up' : 'dn') + '">' +
+        '<span>' + r[0] + '</span>' +
+        '<span class="bar"><i style="width:' + bw.toFixed(0) + '%"></i></span>' +
+        '<span class="s">' + r[1].toFixed(d) + '</span>' +
+        '<span class="s">' + signed(pip(c - r[1], inst), 1) + ' pip ' +
+        (above ? 'sopra' : 'sotto') + '</span></div>';
+    }).join('');
+    tiles.push('<div class="gauge-tile">' +
+      '<div class="ema-stack">' + emaRows + '</div>' +
+      '<div class="gt-v">' + c.toFixed(d) + '</div>' +
+      '<div class="gt-l">prezzo vs medie</div>' +
+      tagFor(stack.filter(function (r) { return c >= r[1]; }).length / stack.length * 2 - 1) +
+      '</div>');
+
+    const scoreColor = function (s) { return s >= 0.15 ? '#18c98a' : s <= -0.15 ? '#f2555a' : '#5a8fd0'; };
+
+    if (ind.rsi[i] != null) {
+      const s = (ind.rsi[i] - 50) / 50;
+      tiles.push('<div class="gauge-tile">' +
+        Ui.dialSvg(ind.rsi[i], 0, 100, [
+          { from: 0, to: 30, color: '#18c98a' },
+          { from: 30, to: 70, color: 'rgba(120,150,200,.5)' },
+          { from: 70, to: 100, color: '#f2555a' }
+        ], scoreColor(s)) +
+        '<div class="gt-v">' + ind.rsi[i].toFixed(1) + '</div>' +
+        '<div class="gt-l">RSI (14)</div>' + tagFor(s) + '</div>');
+    }
+    if (ind.stoch.k[i] != null) {
+      const s = (ind.stoch.k[i] - 50) / 50;
+      tiles.push('<div class="gauge-tile">' +
+        Ui.dialSvg(ind.stoch.k[i], 0, 100, [
+          { from: 0, to: 20, color: '#18c98a' },
+          { from: 20, to: 80, color: 'rgba(120,150,200,.5)' },
+          { from: 80, to: 100, color: '#f2555a' }
+        ], scoreColor(s)) +
+        '<div class="gt-v">' + ind.stoch.k[i].toFixed(1) + ' / ' + (ind.stoch.d[i] || 0).toFixed(1) + '</div>' +
+        '<div class="gt-l">Stochastic %K/%D</div>' + tagFor(s) + '</div>');
+    }
+    if (ind.adx[i] != null) {
+      tiles.push('<div class="gauge-tile">' +
+        Ui.dialSvg(ind.adx[i], 0, 60, [
+          { from: 0, to: 20, color: 'rgba(120,150,200,.5)' },
+          { from: 20, to: 25, color: '#d9a34a' },
+          { from: 25, to: 60, color: '#18c98a' }
+        ], ind.adx[i] > 25 ? '#18c98a' : '#5a8fd0') +
+        '<div class="gt-v">' + ind.adx[i].toFixed(1) + '</div>' +
+        '<div class="gt-l">ADX (14) ' + (ind.adx[i] > 25 ? '- trend definito' : ind.adx[i] < 20 ? '- laterale' : '- debole') + '</div>' +
+        '</div>');
+    }
+
+    /* barre a zone */
+    if (ind.bb.percentB[i] != null) {
+      const pb = ind.bb.percentB[i];
+      const left = Ui.clamp(pb, -0.25, 1.25) / 2.5 * 100;  // scala -0,25..1,25 centrata su 0,5
+      tiles.push('<div class="gauge-tile">' +
+        '<div class="meter" style="margin-top:14px">' +
+        '<span class="meter-zone" style="position:absolute;inset:0">' +
+        '<i style="width:40%;background:rgba(24,201,138,.4)"></i>' +
+        '<i style="width:40%;background:rgba(120,150,200,.35)"></i>' +
+        '<i style="width:20%;background:rgba(242,85,90,.45)"></i>' +
+        '</span>' +
+        '<span style="position:absolute;top:-3px;left:' + left.toFixed(1) + '%;width:3px;bottom:-3px;background:#fff;border-radius:2px"></span>' +
+        '(<b style="position:absolute;left:' + left.toFixed(1) + '%;top:16px;color:#fff;font-size:0"></b>)' +
+        '</div>' +
+        '<div class="gt-v">' + pb.toFixed(2) + '</div>' +
+        '<div class="gt-l">%B \u2013 -0,25 \u2192 1,25 (sotto banda / dentro / sopra)</div>' +
+        tagFor(-(pb - 0.5) * 2) + '</div>');
+    }
+
+    if (ind.atr[i] != null) {
+      const hist = ind.atr.slice(Math.max(0, i - 49), i + 1).filter(function (v) { return v != null && isFinite(v); });
+      const meanAtr = hist.length ? hist.reduce(function (x, y) { return x + y; }, 0) / hist.length : ind.atr[i];
+      const ratio = ind.atr[i] / meanAtr;
+      const w = Ui.clamp(ratio / 2, 0, 1) * 100;
+      tiles.push('<div class="gauge-tile">' +
+        '<div class="meter" style="margin-top:14px">' +
+        '<span class="meter-zone" style="position:absolute;inset:0">' +
+        '<i style="width:50%;background:rgba(90,143,208,.4)"></i>' +
+        '<i style="width:50%;background:rgba(217,163,74,.45)"></i>' +
+        '</span>' +
+        '<span style="position:absolute;top:-3px;left:' + w.toFixed(1) + '%;width:3px;bottom:-3px;background:#fff"></span>' +
+        '</div>' +
+        '<div class="gt-v">' + ind.atr[i].toFixed(d) + ' (' + ratio.toFixed(2) + 'x)</div>' +
+        '<div class="gt-l">ATR (14) vs media di 50 barre</div>' +
+        '</div>');
+    }
+
+    if (ind.volumeSma[i] != null && ind.volumeSma[i] > 0) {
+      const vr = ind.volumes[i] / ind.volumeSma[i];
+      const w = Ui.clamp(vr / 2, 0, 1) * 100;
+      tiles.push('<div class="gauge-tile">' +
+        '<div class="meter" style="margin-top:14px">' +
+        '<span class="meter-zone" style="position:absolute;inset:0">' +
+        '<i style="width:50%;background:rgba(90,143,208,.4)"></i>' +
+        '<i style="width:50%;background:rgba(217,163,74,.45)"></i>' +
+        '</span>' +
+        '<span style="position:absolute;top:-3px;left:' + w.toFixed(1) + '%;width:3px;bottom:-3px;background:#fff"></span>' +
+        '</div>' +
+        '<div class="gt-v">' + vr.toFixed(2) + 'x</div>' +
+        '<div class="gt-l">volumi vs media</div>' +
+        '</div>');
+    } else if (state.source === 'real' && state.feedInfo && !state.feedInfo.hasVolume) {
+      tiles.push('<div class="gauge-tile"><div class="gt-v">n.d.</div><div class="gt-l">volumi vs media<br>(non offerti sulla coppia)</div></div>');
+    }
+
+    if (ind.roc5[i] != null) {
+      const unit = a.atr / c;
+      const v = Ui.clamp(ind.roc5[i] / (unit * 3), -1, 1);
+      const from = v < 0 ? 50 + v * 50 : 50, width = Math.abs(v) * 50;
+      tiles.push('<div class="gauge-tile">' +
+        '<div class="meter" style="margin-top:14px">' +
+        '<span class="meter-zone" style="position:absolute;inset:0">' +
+        '<i style="width:50%;background:rgba(242,85,90,.4)"></i>' +
+        '<i style="width:50%;background:rgba(24,201,138,.4)"></i>' +
+        '</span>' +
+        '<span style="position:absolute;top:-3px;left:50%;width:3px;bottom:-3px;background:rgba(255,255,255,.35)"></span>' +
+        '<span style="position:absolute;top:-3px;left:' + from.toFixed(1) + '%;width:' + width.toFixed(1) + '%;bottom:-3px;background:#5a8fd0;border-radius:2px"></span>' +
+        '</div>' +
+        '<div class="gt-v">' + (ind.roc5[i] * 100).toFixed(2) + '%</div>' +
+        '<div class="gt-l">ROC su 5 barre</div>' +
+        tagFor(ind.roc5[i] / (unit * 3)) + '</div>');
+    }
+
+    if (ind.sma200[i] != null) {
+      const dist = (c - ind.sma200[i]) / a.atr;
+      const v = Ui.clamp(dist / 4, -1, 1);
+      const from = v < 0 ? 50 + v * 50 : 50, width = Math.abs(v) * 50;
+      tiles.push('<div class="gauge-tile">' +
+        '<div class="meter" style="margin-top:14px">' +
+        '<span class="meter-zone" style="position:absolute;inset:0">' +
+        '<i style="width:50%;background:rgba(242,85,90,.4)"></i>' +
+        '<i style="width:50%;background:rgba(24,201,138,.4)"></i>' +
+        '</span>' +
+        '<span style="position:absolute;top:-3px;left:50%;width:3px;bottom:-3px;background:rgba(255,255,255,.35)"></span>' +
+        '<span style="position:absolute;top:-3px;left:' + from.toFixed(1) + '%;width:' + width.toFixed(1) + '%;bottom:-3px;background:#5a8fd0;border-radius:2px"></span>' +
+        '</div>' +
+        '<div class="gt-v">' + signed(dist, 2) + ' ATR</div>' +
+        '<div class="gt-l">bias SMA200</div>' +
+        tagFor(dist / 4) + '</div>');
+    }
+
+    if (ind.macd.histogram[i] != null) {
+      tiles.push('<div class="gauge-tile">' +
+        '<canvas id="macdHist" class="macd-strip"></canvas>' +
+        '<div class="gt-v">' + (ind.macd.histogram[i] * Math.pow(10, inst.pipDecimals)).toFixed(1) + ' pip</div>' +
+        '<div class="gt-l">MACD istogramma (30 barre)</div>' +
+        tagFor(ind.macd.histogram[i] / (a.atr * 0.9)) + '</div>');
+    }
+
+    $('indBlock').innerHTML = tiles.join('');
+    drawMacdStrip();
+
+    /* il dettaglio numerico resta disponibile in tabella ripiegata */
+    const rows = [];
     function row(label, value, score) {
       rows.push('<tr><td>' + label + '</td><td>' + value + '</td><td>' + tagFor(score) + '</td></tr>');
     }
-
-    const c = ind.closes[i];
-    row('Prezzo', c.toFixed(inst.digits), a.score);
-    if (ind.ema9[i] != null) row('EMA 9', ind.ema9[i].toFixed(inst.digits), Math.sign(ind.ema9[i] - c) * -1);
-    if (ind.ema21[i] != null) row('EMA 21', ind.ema21[i].toFixed(inst.digits), Math.sign(ind.ema21[i] - c) * -1);
-    if (ind.ema50[i] != null) row('EMA 50', ind.ema50[i].toFixed(inst.digits), Math.sign(ind.ema50[i] - c) * -1);
-    if (ind.sma200[i] != null) row('SMA 200', ind.sma200[i].toFixed(inst.digits), Math.sign(ind.sma200[i] - c) * -1);
+    row('Prezzo', c.toFixed(d), a.score);
+    if (ind.ema9[i] != null) row('EMA 9', ind.ema9[i].toFixed(d), Math.sign(ind.ema9[i] - c) * -1);
+    if (ind.ema21[i] != null) row('EMA 21', ind.ema21[i].toFixed(d), Math.sign(ind.ema21[i] - c) * -1);
+    if (ind.ema50[i] != null) row('EMA 50', ind.ema50[i].toFixed(d), Math.sign(ind.ema50[i] - c) * -1);
+    if (ind.sma200[i] != null) row('SMA 200', ind.sma200[i].toFixed(d), Math.sign(ind.sma200[i] - c) * -1);
     if (ind.rsi[i] != null) row('RSI (14)', ind.rsi[i].toFixed(1), (ind.rsi[i] - 50) / 50);
     if (ind.stoch.k[i] != null) row('%K / %D', ind.stoch.k[i].toFixed(1) + ' / ' + (ind.stoch.d[i] || 0).toFixed(1), (ind.stoch.k[i] - 50) / 50);
     if (ind.macd.macd[i] != null) row('MACD', (ind.macd.macd[i] * Math.pow(10, inst.pipDecimals)).toFixed(1) + ' pip', Math.sign(ind.macd.histogram[i]));
     if (ind.macd.histogram[i] != null) row('MACD istogr.', (ind.macd.histogram[i] * Math.pow(10, inst.pipDecimals)).toFixed(1) + ' pip', ind.macd.histogram[i] / (a.atr * 0.9));
     if (ind.bb.upper[i] != null) {
-      row('Bollinger sup.', ind.bb.upper[i].toFixed(inst.digits), -(ind.bb.percentB[i] - 0.5));
-      row('Bollinger inf.', ind.bb.lower[i].toFixed(inst.digits), -(ind.bb.percentB[i] - 0.5));
+      row('Bollinger sup.', ind.bb.upper[i].toFixed(d), -(ind.bb.percentB[i] - 0.5));
+      row('Bollinger inf.', ind.bb.lower[i].toFixed(d), -(ind.bb.percentB[i] - 0.5));
       row('%B', ind.bb.percentB[i].toFixed(2), -(ind.bb.percentB[i] - 0.5) * 2);
     }
-    if (ind.atr[i] != null) row('ATR (14)', ind.atr[i].toFixed(inst.digits), 0);
+    if (ind.atr[i] != null) row('ATR (14)', ind.atr[i].toFixed(d), 0);
     if (ind.adx[i] != null) row('ADX (14)', ind.adx[i].toFixed(1), ind.adx[i] > 25 ? 0.5 : -0.2);
     if (ind.volumeSma[i] != null && ind.volumeSma[i] > 0) {
       const vr = ind.volumes[i] / ind.volumeSma[i];
@@ -735,7 +1040,6 @@
     } else if (state.source === 'real' && state.feedInfo && !state.feedInfo.hasVolume) {
       row('Volumi vs media', 'n.d.', 0);
     }
-
     $('indTable').querySelector('tbody').innerHTML = rows.join('');
   }
 
@@ -969,6 +1273,23 @@
       return '<div class="cell' + (c.hi ? ' hi' : '') + '"><div class="k">' + c.k + '</div>' +
         '<div class="v">' + c.v + '</div><div class="n">' + c.n + '</div></div>';
     }).join('');
+
+    /* mappa della liquidita', scala operativa e timeline di struttura */
+    if (window.Ui) {
+      Ui.levelMap($('liqMap'), s.liquidity, s.price, d);
+      const ladderItems = [
+        { price: s.price, label: 'Prezzo attuale', text: s.price.toFixed(d), cls: 'entry' },
+        { price: p.stop, label: 'Scenario invalidato', text: p.stop.toFixed(d), cls: 'sl' },
+        { price: p.tp1, label: 'TP1 \u2013 equilibrio', text: p.tp1.toFixed(d), cls: 'extra' },
+        { price: p.tp2, label: 'Liquidit\u00e0 (TP2)', text: p.tp2.toFixed(d), cls: 'tp2' },
+        { price: p.limitEntry, label: 'Ingresso limite', text: p.limitEntry.toFixed(d), cls: 'extra' }
+      ];
+      Ui.ladder($('smcLadder'), ladderItems, {
+        risk: [s.price, p.stop],
+        gain: [s.price, p.tp2]
+      });
+      Ui.timeline($('structTimeline'), s.structure.events, s.lastIndex, 50);
+    }
 
     const list = $('smcReasons');
     list.innerHTML = '';

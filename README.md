@@ -89,7 +89,7 @@ ln -sfn ~/Documenti/forex/forex.sh ~/forex.sh
 
 ```
 forex/
-├── index.html            interfaccia (layout a due colonne + registro)
+├── index.html            interfaccia (6 aree a tab: dashboard, grafici, tecnica, SMC, sentiment+notizie, registro)
 ├── css/styles.css        tema scuro da terminale di trading
 ├── server.py             ponte dati locale: file statici (senza cache) + /api/candles (Yahoo Finance)
 ├── js/
@@ -101,6 +101,7 @@ forex/
 │   ├── feed.js           lettura e controllo dei dati reali, sentiment e notizie dal ponte
 │   ├── report.js         report divulgativo in linguaggio semplice
 │   ├── chart.js          renderer del grafico a candele su canvas
+│   ├── ui.js             navigazione a tab e componenti grafici (dial, ladder, mappe)
 │   └── app.js            controller e collegamento all'interfaccia
 ├── tests/
 │   ├── selfcheck.html    test automatici sui moduli
@@ -113,6 +114,13 @@ forex/
 ```
 
 ## Cosa fa l'applicazione
+
+L'interfaccia è organizzata in **6 aree a tab** per non mescolare letture di scala diversa:
+**Dashboard** (verdetto combinato, scala operativa, tre modelli a confronto, prossimo evento,
+watchlist), **Grafici** (candele, proiezione, backtest, contesto), **Analisi tecnica**
+(segnale operativo + indicatori in gauge grafiche), **SMC** (struttura, mappa liquidità,
+scala ed eventi), **Sentiment e notizie** (banda affiancata) e **Registro**. In ogni tab
+restano i dettagli numerici (con il dettaglio tabellare ripiegato nell'analisi tecnica).
 
 - **Grafico a candele** con medie esponenziali (9/21/50), bande di Bollinger, volumi,
   overlay SMC (order block, fair value gap, BOS/CHoCH, pool di liquidità, premio/sconto),
