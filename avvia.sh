@@ -4,6 +4,7 @@
 #
 # Uso:  ./avvia.sh                  avvia il server locale (con dati reali) e apre l'app
 #       ./avvia.sh --lan            rende l'app raggiungibile dalla rete locale
+#       ./avvia.sh --port 8199      usa una porta precisa (errore se è occupata)
 #       ./avvia.sh --host 0.0.0.0   come --lan, con un indirizzo scelto a mano
 #       ./avvia.sh --file           forza l'apertura diretta del file (file://)
 #       ./avvia.sh --stop           ferma il server locale avviato in precedenza
@@ -23,20 +24,28 @@ PORT="${PORT:-8901}"
 PIDFILE_BASE="/tmp/forexvision"
 HOST="${FOREXVISION_HOST:-127.0.0.1}"
 OPZIONE=""
+PORTA_FISSA=""
 
-# --- opzioni di rete ------------------------------------------------------
+# --- opzioni --------------------------------------------------------------
 while [ $# -gt 0 ]; do
   case "$1" in
     --lan)     HOST="0.0.0.0"; shift ;;
     --host)    HOST="${2:-}"; shift 2 ;;
     --host=*)  HOST="${1#*=}"; shift ;;
+    --port)    PORTA_FISSA="${2:-}"; shift 2 ;;
+    --port=*)  PORTA_FISSA="${1#*=}"; shift ;;
     *)         [ -z "$OPZIONE" ] && OPZIONE="$1"; shift ;;
   esac
 done
 
+if [ -n "$PORTA_FISSA" ] && ! [ "$PORTA_FISSA" -ge 1 ] 2>/dev/null; then
+  echo "Porta non valida: $PORTA_FISSA"
+  exit 2
+fi
+
 case "$OPZIONE" in
   ""|--file|--stop) ;;
-  *) echo "Opzione non riconosciuta: $OPZIONE"; echo "Uso: ./avvia.sh [--lan|--host INDIRIZZO|--file|--stop]"; exit 2 ;;
+  *) echo "Opzione non riconosciuta: $OPZIONE"; echo "Uso: ./avvia.sh [--lan|--port N|--host INDIRIZZO|--file|--stop]"; exit 2 ;;
 esac
 
 # --- utilita' -------------------------------------------------------------
@@ -102,12 +111,28 @@ if [ "$OPZIONE" = "--file" ] || ! command -v python3 >/dev/null 2>&1; then
   exit 0
 fi
 
-# --- scelta di una porta libera ------------------------------------------
+# --- scelta della porta ---------------------------------------------------
 
 scelta=""
-for p in $(seq "$PORT" $((PORT + 40))); do
-  if [ "$(porta_libera "$p")" = "ok" ]; then scelta="$p"; break; fi
-done
+if [ -n "$PORTA_FISSA" ]; then
+  # porta imposta: niente ripieghi silenziosi, se e' occupata lo si dice
+  scelta="$PORTA_FISSA"
+  pidfile_fissa="${PIDFILE_BASE}-${scelta}.pid"
+  nostro=0
+  if [ -f "$pidfile_fissa" ] && kill -0 "$(cat "$pidfile_fissa")" 2>/dev/null; then
+    nostro=1
+  fi
+  if [ "$nostro" != 1 ] && [ "$(porta_libera "$scelta")" != "ok" ]; then
+    echo "La porta $scelta e' occupata da un altro processo."
+    echo "Chi la occupa: $(ss -ltnp 2>/dev/null | grep -m1 ":$scelta " | sed 's/^ *//' || echo 'non identificato')"
+    echo "Fermalo oppure avvia con un'altra porta (--port N)."
+    exit 1
+  fi
+else
+  for p in $(seq "$PORT" $((PORT + 40))); do
+    if [ "$(porta_libera "$p")" = "ok" ]; then scelta="$p"; break; fi
+  done
+fi
 
 if [ -z "$scelta" ]; then
   echo "Nessuna porta libera fra $PORT e $((PORT + 40)): apertura diretta del file."

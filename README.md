@@ -21,9 +21,12 @@ In entrambi i casi nessuna chiave API è necessaria.
 cd ~/Documenti/forex
 ./avvia.sh              # avvia server.py (file + dati reali) e apre il browser
 ./avvia.sh --lan        # come sopra, ma raggiungibile anche dalla rete locale
+./avvia.sh --port 8199  # porta precisa (se è occupata lo dice e non ripiega)
 ./avvia.sh --file       # apre direttamente index.html (file://): solo dati simulati
 ./avvia.sh --stop       # ferma il server locale
 ```
+
+Dalla home c'è anche la scorciatoia: `~/forex.sh`
 
 Il server `server.py` serve i file **e** espone `/api/candles`, che scarica i prezzi
 reali da Yahoo Finance, li ripulisce e li riconverte nel formato dell'app. Se il server
@@ -55,6 +58,31 @@ i dati di mercato e gli endpoint del ponte. Va usata su reti di cui ci si fida
 (casa, VPN Tailscale), non su reti pubbliche, e l'opzione è volutamente esplicita:
 senza `--lan` o `--host` il ponte resta chiuso su `127.0.0.1`.
 
+### Scorciatoia dalla home (porta 8199)
+
+`~/forex.sh` avvia l'app sulla **porta 8199**, raggiungibile anche dalla rete
+locale, e apre il browser:
+
+```bash
+~/forex.sh                    # avvia e apri l'app su http://127.0.0.1:8199
+~/forex.sh --stop             # ferma il server avviato così
+~/forex.sh --host 127.0.0.1   # solo questa macchina
+PORTA=9000 ~/forex.sh         # un'altra porta
+```
+
+Se la porta è già occupata da un altro processo lo script **non ripiega in
+silenzio**: dice chi la occupa ed esce con codice diverso da zero. Se invece il
+server è già stato avviato da lì, lo riconosce e apre solo il browser.
+
+Il file `~/forex.sh` è un collegamento al `forex.sh` versionato dentro il
+progetto, che a sua volta passa le opzioni ad `avvia.sh`: la logica di avvio
+(attesa che il ponte risponda, pidfile, log, apertura del browser) resta in un
+posto solo. Per ricreare il collegamento su un'altra macchina:
+
+```bash
+ln -sfn ~/Documenti/forex/forex.sh ~/forex.sh
+```
+
 ## Struttura
 
 ```
@@ -78,6 +106,7 @@ forex/
 │   ├── live.html         test end-to-end con i dati reali del ponte
 │   ├── slowstart.html    avvio con il ponte lento (corse all'avvio)
 │   └── calibration.html  misura della calibrazione di volatilità
+├── forex.sh              scorciatoia di avvio (porta 8199, linkato in ~/forex.sh)
 └── avvia.sh              script di avvio
 ```
 
