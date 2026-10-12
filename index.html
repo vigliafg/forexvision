@@ -69,18 +69,25 @@
 
     <div class="card verdict-hero">
       <div class="card-head">
-        <h2>Verdetto d’insieme</h2>
+        <h2>Tre modelli a confronto</h2>
         <span class="dim" id="confStamp">tecnico &middot; SMC &middot; sentiment</span>
       </div>
-      <div class="conf-grid" id="confGrid"></div>
-      <div id="confVerdict" class="conf-verdict"></div>
-      <div class="conf-cta">
-        <button id="confReportBtn" class="btn btn-ghost">&#128196; Leggi il report completo in linguaggio semplice</button>
-        <span class="dim">spiega il quadro attuale, le previsioni dei tre studi e il significato di ogni termine</span>
-      </div>
-    
 
-  <div class="dash-duo">
+      <div class="verdict-split">
+        <div class="gauge-grid" id="dashDials"></div>
+        <div class="verdict-caption">
+          <div id="confVerdict" class="conf-verdict"></div>
+
+          <div class="conf-grid" id="confGrid" style="display:none"></div>
+
+          <div class="conf-cta">
+            <button id="confReportBtn" class="btn btn-ghost">&#128196; Leggi il report completo in linguaggio semplice</button>
+            <span class="dim">spiega il quadro attuale, le previsioni dei tre studi e il significato di ogni termine</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-head"><h2>Prezzo e moto recente</h2><span class="dim" id="dashSparkStamp">last 40 barre</span></div>
       <canvas id="dashSpark" class="macd-strip" style="height:64px"></canvas>
@@ -90,24 +97,22 @@
       <div class="card-head"><h2>Scala operativa</h2><span class="dim">da piano tecnico e SMC</span></div>
       <div class="ladder" id="dashLadder"></div>
     </div>
-  </div>
 
-  <div class="dash-duo">
-    <div class="card">
-      <div class="card-head"><h2>Tre modelli a confronto</h2><span class="dim">score normalizzato -1 / +1</span></div>
-      <div class="gauge-grid" id="dashDials"></div>
-    </div>
+<div class="dash-duo">
+
     <div class="card">
       <div class="card-head"><h2>Prossimo evento ad alto impatto</h2><span class="dim">dal calendario</span></div>
       <div id="dashEvent" class="kpi-row"></div>
       <p class="note small" id="dashEventNote" style="display:none"></p>
     </div>
-  </div>
 
     <div class="card">
       <div class="card-head"><h2>Watchlist</h2><span class="dim">segnale sintetico</span></div>
       <ul class="watchlist" id="watchlist"></ul>
     </div>
+
+</div>
+
 
 </section>
 

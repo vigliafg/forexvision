@@ -128,9 +128,10 @@
    * @param {Array} items     [{price,label,text,cls}]
    * @param {Object} [zones]  {risk:[p1,p2], gain:[p1,p2]} coppie di estremi
    */
-  function ladder(el, items, zones) {
+  function ladder(el, items, zones, orientation) {
     if (!el) return;
     zones = zones || {};
+    const H = orientation === 'h';
     const all = items.map(function (i) { return i.price; })
       .concat(zones.risk || [], zones.gain || []);
     let min = Math.min.apply(null, all), max = Math.max.apply(null, all);
@@ -138,7 +139,26 @@
     min -= pad; max += pad;
     const y = (p) => clamp(pct(p, min, max), 0.02, 0.98) * 100;
 
-    let html = '<div class="rail"></div>';
+    let html = '';
+    if (H) {
+      html += '<div class="rail"></div>';
+      html += zoneHtmlH(y, zones.risk, 'stop-zone');
+      html += zoneHtmlH(y, zones.gain, 'gain-zone');
+      const sorted = items.slice().sort(function (a, b) { return a.price - b.price; });
+      sorted.forEach(function (i, idx) {
+        const x = clamp(pct(i.price, min, max), 0.04, 0.96) * 100;
+        html += '<div class="h-dot ' + (i.cls || 'extra') + '" style="left:' + x.toFixed(1) + '%"></div>' +
+          '<div class="h-lab ' + (i.cls || 'extra') + ' ' + (idx % 2 ? 'lo' : 'hi') + '" style="left:' + x.toFixed(1) + '%">' +
+          '<span class="s-lab">' + (i.label || '') + '</span>' +
+          '<span class="s-price">' + (i.text != null ? i.text : '') + '</span>' +
+          '</div>';
+      });
+      el.innerHTML = html;
+      el.classList.add('ladder');
+      el.classList.add('h-l');
+      return;
+    }
+    html += '<div class="rail"></div>';
     html += zoneHtml(y, zones.risk, 'stop-zone');
     html += zoneHtml(y, zones.gain, 'gain-zone');
     html += items.map(function (i) {
@@ -156,6 +176,13 @@
     const a = y(pair[0]), b = y(pair[1]);
     return '<div class="' + cls + '" style="top:' + Math.min(a, b).toFixed(1) +
       '%;height:' + Math.abs(b - a).toFixed(1) + '%"></div>';
+  }
+  function zoneHtmlH(y, pair, cls) {
+    if (!pair || !isFinite(pair[0]) || !isFinite(pair[1])) return '';
+    const a = y(pair[0]), b = y(pair[1]);
+    const left = Math.min(a, b), w = Math.abs(b - a);
+    return '<div class="' + cls + '" style="left:' + left.toFixed(1) +
+      '%;width:' + w.toFixed(1) + '%"></div>';
   }
 
   /* ------------------------------------------------------------ spark */

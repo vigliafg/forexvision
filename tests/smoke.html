@@ -138,8 +138,12 @@
       'In modalità simulata i tre studi entrano tutti nel verdetto');
     log(/\d/.test($('#confGrid .conf-item .val').textContent), 'Punteggi dei modelli mostrati',
       $('#confGrid .conf-item .val').textContent);
-    log($('#confVerdict .tag-big') && /^(ACQUISTO|VENDITA|NEUTRO)$/.test($('#confVerdict .tag-big').textContent),
+    log($$('#confVerdict .tag-big') && /^(ACQUISTO|VENDITA|NEUTRO)$/.test($('#confVerdict .tag-big').textContent),
       'Verdetto di confluenza mostrato', $('#confVerdict').textContent.slice(0, 80) + '\u2026');
+    log($$('#tab-dash #confGrid').length === 1,
+      'La griglia di dettaglio dei modelli resta nel cruscotto (tale e scritta)');
+    log($$('#tab-dash #dashDials .gauge-tile').length === 3,
+      'I tre modelli sono i dial del cruscotto', $$('#dashDials .gauge-tile').length + ' dial');
 
     log(/\d/.test($('#smcBias').textContent), 'Struttura SMC mostrata', $('#smcBias').textContent);
     log(/BOS|CHoCH|nessun/.test($('#smcEvent').textContent), 'Ultimo evento di struttura mostrato',
@@ -264,9 +268,9 @@
       'Sei aree organizzate a tab presenti', $$('#tabbar .tab').map(function (t) { return t.textContent.trim(); }).join(' | '));
     log($('#tab-dash').classList.contains('active') && !$('#tab-grafici').classList.contains('active'),
       'Il dashboard è la tab attiva all\u2019avvio');
-    log($$('#dashLadder .step').length >= 4 && $('#dashSpark').width > 0 && $$('#dashEvent .kpi').length >= 1,
-      'Cruscotto con scala operativa, sparkline e prossimo evento',
-      $$('#dashLadder .step').length + ' livelli \u00b7 ' + $$('#dashEvent .kpi').length + ' kpi evento');
+    log($$('#dashLadder .h-lab').length >= 4 && $('#dashSpark').width > 0 && $$('#dashEvent .kpi').length >= 1,
+      'Cruscotto con scala operativa orizzontale, sparkline e prossimo evento',
+      $$('#dashLadder .h-lab').length + ' livelli \u00b7 ' + $$('#dashEvent .kpi').length + ' kpi evento');
     log($$('#indBlock .gauge-tile').length >= 9 && !!$('.ind-detail'),
       'Analisi tecnica: griglia di gauge e dettaglio numerico ripiegato',
       $$('#indBlock .gauge-tile').length + ' tile');

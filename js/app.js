@@ -747,7 +747,7 @@
     Ui.ladder($('dashLadder'), items, {
       risk: [a.price, a.stop],
       gain: [a.price, a.target]
-    });
+    }, 'h');   // nella dashboard la scala è orizzontale
 
     // sparkline del moto recente + kpi di contesto
     const candles = state.series.candles;
