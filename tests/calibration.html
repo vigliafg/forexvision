@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="it">
+<head><meta charset="UTF-8"><title>calibrazione volatilita</title>
+<style>body{background:#0b1017;color:#e6edf7;font:12px/1.45 monospace;padding:14px}
+pre{margin:3px 0}</style></head>
+<body><pre id="h">misura in corso...</pre><div id="out"></div>
+<script src="../js/data.js"></script>
+<script src="../js/indicators.js"></script>
+<script src="../js/forecast.js"></script>
+<script>
+(function () {
+  var D = window.ForexData, I = window.Indicators;
+  var lines = [];
+  function p(t) { lines.push(t); }
+
+  // Riferimenti di mercato: ATR giornaliero tipico in % del prezzo
+  var REF = {
+    'EUR/USD': 0.62, 'GBP/USD': 0.75, 'USD/JPY': 0.70, 'USD/CHF': 0.58,
+    'AUD/USD': 0.85, 'USD/CAD': 0.62, 'NZD/USD': 0.90, 'EUR/GBP': 0.48,
+    'EUR/JPY': 0.85, 'GBP/JPY': 1.05, 'AUD/JPY': 1.05, 'EUR/AUD': 0.75,
+    'XAU/USD': 1.35, 'XAG/USD': 2.20
+  };
+  var SEEDS = 10;
+
+  // ATR per barra mediato sull'intera serie dopo il warm-up: stima stabile
+  // del livello di volatilita' del modello (l'ATR e' un EMA, quindi molto
+  // autocorrelato: per questo servono serie lunghe e molti seed).
+  function perBarAtrPct(symbol, tf) {
+    var sum = 0, n = 0;
+    for (var s = 0; s < SEEDS; s++) {
+      var c = D.generateSeries(symbol, tf, s * 7 + 3).candles;
+      var ind = I.computeAll(c);
+      for (var i = 200; i < c.length; i++) {
+        if (ind.atr[i] != null) { sum += ind.atr[i] / c[i].close; n++; }
+      }
+    }
+    return sum / n * 100;
+  }
+
+  p('Misura con ' + SEEDS + ' seed, media sulle barre dalla 200 in poi.');
+  p('ATR giornaliero stimato = ATR orario x sqrt(24).');
+  p('');
+  p('strumento   param  ATR H1%   ATR giorn%  rif.%   scarto   ATR H1 in pip');
+  D.INSTRUMENTS.forEach(function (inst) {
+    var h1 = perBarAtrPct(inst.symbol, 'H1');
+    var daily = h1 * Math.sqrt(1440 / D.TIMEFRAMES.H1.minutes);
+    var ref = REF[inst.symbol];
+    var err = (daily / ref - 1) * 100;
+    var pips = h1 / 100 * inst.base / D.pipSize(inst);
+    p(inst.symbol.padEnd(9) + '  ' + String(inst.volatility).padEnd(6) + '  ' +
+      h1.toFixed(4) + '    ' + daily.toFixed(3) + '     ' + ref.toFixed(2) + '    ' +
+      (err >= 0 ? '+' : '') + err.toFixed(0) + '%'.padEnd(3) + '    ' + pips.toFixed(1));
+  });
+  p('');
+  p('Controllo coerenza orizzonti (ATR in pip per barra):');
+  D.INSTRUMENTS.forEach(function (inst) {
+    var row = inst.symbol.padEnd(9);
+    ['M5', 'M15', 'H1', 'H4', 'D1'].forEach(function (tf) {
+      var v = perBarAtrPct(inst.symbol, tf) / 100 * inst.base / D.pipSize(inst);
+      row += tf + ' ' + v.toFixed(1).padStart(7) + '  ';
+    });
+    p(row);
+  });
+
+  p('');
+  p('Distribuzione dell\'ATR per barra (EUR/USD H1, 10 seed, barre dalla 200):');
+  var vals = [];
+  for (var s2 = 0; s2 < 10; s2++) {
+    var c3 = D.generateSeries('EUR/USD', 'H1', s2 * 7 + 3).candles;
+    var i3 = I.computeAll(c3);
+    for (var j2 = 200; j2 < c3.length; j2++) {
+      if (i3.atr[j2] != null) vals.push(i3.atr[j2] / c3[j2].close * 100);
+    }
+  }
+  vals.sort(function (a, b) { return a - b; });
+  function q(f) { return vals[Math.min(vals.length - 1, Math.floor(vals.length * f))]; }
+  p('  media ' + (vals.reduce(function (a, b) { return a + b; }, 0) / vals.length).toFixed(4) +
+    '%   mediana ' + q(0.5).toFixed(4) + '%   p90 ' + q(0.9).toFixed(4) +
+    '%   p99 ' + q(0.99).toFixed(4) + '%   max ' + vals[vals.length - 1].toFixed(4) + '%');
+  p('  rapporto p90/mediana = ' + (q(0.9) / q(0.5)).toFixed(2) + '  (reale: circa 1,5-2,0)');
+
+  p('');
+  p('Controllo realismo di ADX e backtest (EUR/USD H1, 10 seed):');
+  var F = window.Forecast;
+  var adxSum = 0, adxN = 0, adxMax = 0, hit = 0, trades = 0, rTot = 0;
+  for (var s = 0; s < 10; s++) {
+    var c2 = D.generateSeries('EUR/USD', 'H1', s * 11 + 5).candles;
+    var i2 = I.computeAll(c2);
+    for (var j = 220; j < c2.length; j++) {
+      if (i2.adx[j] != null) { adxSum += i2.adx[j]; adxN++; adxMax = Math.max(adxMax, i2.adx[j]); }
+    }
+    var bt = F.backtest(c2, D.instrumentBySymbol('EUR/USD'), 10, { window: 200 });
+    if (bt.count > 0) { hit += bt.winRate * bt.count; trades += bt.count; rTot += bt.totalR; }
+  }
+  p('  ADX(14) medio = ' + (adxSum / adxN).toFixed(1) + '   massimo = ' + adxMax.toFixed(1) +
+    '   (reale: media 20-30, picchi oltre 50 rari)');
+  p('  Backtest: ' + trades + ' operazioni, hit rate ' + (trades ? (hit / trades * 100).toFixed(1) : '-') +
+    '%, R totali ' + rTot.toFixed(1) + ' (reale: hit rate ~50%, R totali ~0)');
+
+  document.getElementById('h').textContent = 'MISURA COMPLETATA';
+  document.getElementById('out').textContent = lines.join('\n');
+  try {
+    var x = new XMLHttpRequest();
+    x.open('POST', '/report', false);
+    x.setRequestHeader('Content-Type', 'text/plain');
+    x.send(lines.join('\n'));
+  } catch (e) {}
+})();
+</script>
+</body></html>

@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<title>ForexVision - self check</title>
+<style>
+  body{background:#0b1017;color:#e6edf7;font:14px/1.5 "JetBrains Mono",monospace;padding:18px;margin:0}
+  .pass{color:#18c98a}.fail{color:#f2555a}.info{color:#8fa3bf}
+  h1{font-size:18px;color:#63b3ff}
+  pre{font:13px/1.55 "JetBrains Mono",monospace;margin:4px 0}
+  #summary{font-size:20px;font-weight:700;padding:10px;border-radius:8px;border:1px solid #22304a;background:#141d2b;display:inline-block}
+</style>
+</head>
+<body>
+<h1>ForexVision &mdash; verifica automatica dei moduli</h1>
+<div id="summary">in esecuzione...</div>
+<div id="out"></div>
+<script>
+  // Raccoglie anche gli errori non gestiti
+  var errors = [];
+  window.onerror = function (msg, src, line) {
+    errors.push(msg + ' @' + String(src || '?').split('/').pop() + ':' + line);
+  };
+</script>
+<script src="../js/data.js"></script>
+<script src="../js/indicators.js"></script>
+<script src="../js/forecast.js"></script>
+<script src="../js/smc.js"></script>
+<script src="../js/sentiment.js"></script>
+<script src="../js/feed.js"></script>
+<script src="../js/report.js"></script>
+<script>
+(function () {
+  var out = document.getElementById('out');
+  var reportLines = [];
+  var pass = 0, fail = 0;
+  function log(ok, label, extra) {
+    ok ? pass++ : fail++;
+    var p = document.createElement('pre');
+    p.className = ok ? 'pass' : 'fail';
+    p.textContent = (ok ? 'PASS  ' : 'FAIL  ') + label + (extra ? '   |  ' + extra : '');
+    out.appendChild(p);
+    reportLines.push(p.textContent);
+  }
+  function info(txt) {
+    var p = document.createElement('pre');
+    p.className = 'info';
+    p.textContent = txt;
+    out.appendChild(p);
+    reportLines.push(txt);
+  }
+  function isFiniteArr(arr) {
+    var bad = 0;
+    arr.forEach(function (v) { if (v != null && !isFinite(v)) bad++; });
+    return bad;
+  }
+
+  var D = window.ForexData, I = window.Indicators, F = window.Forecast;
+
+  try {
+
+  // ---------- 1. indicatori su serie nota ----------
+  var flat = new Array(60).fill(5);
+  var smaFlat = I.sma(flat, 10), emaFlat = I.ema(flat, 10), rsiFlat = I.rsi(flat, 14);
+  log(smaFlat[59] === 5 && emaFlat[59] === 5, 'SMA/EMA su serie costante = 5', 'sma=' + smaFlat[59] + ' ema=' + emaFlat[59]);
+  log(rsiFlat[59] === 0 || rsiFlat[59] === 100 || rsiFlat[59] === null || isFinite(rsiFlat[59]), 'RSI su serie piatta non produce NaN', 'rsi=' + rsiFlat[59]);
+
+  var rising = [];
+  for (var i = 0; i < 80; i++) rising.push(1 + i * 0.01);
+  var rsiUp = I.rsi(rising, 14);
+  log(rsiUp[79] > 95, 'RSI su serie monotona crescente ~ 100', 'rsi=' + rsiUp[79].toFixed(2));
+  var mac = I.macd(rising, 12, 26, 9);
+  log(Math.abs(mac.histogram[79] - (mac.macd[79] - mac.signal[79])) < 1e-12, 'MACD: istogramma = linea - segnale');
+  var bb = I.bollinger(flat, 20, 2);
+  log(bb.upper[59] === 5 && bb.lower[59] === 5, 'Bollinger su serie piatta: bande coincidenti', '%B=' + bb.percentB[59]);
+  var atrC = [];
+  for (var k = 0; k < 40; k++) atrC.push({ open: 1, high: 1.002, low: 0.998, close: 1, volume: 100 });
+  var atrArr = I.atr(atrC.map(function (c) { return c.high; }), atrC.map(function (c) { return c.low; }), atrC.map(function (c) { return c.close; }), 14);
+  log(Math.abs(atrArr[39] - 0.004) < 1e-9, 'ATR su candele di ampiezza fissa 40 pip', 'atr=' + atrArr[39]);
+
+  // ---------- 2. generatore di serie ----------
+  var badOHLC = 0, badVol = 0;
+  D.INSTRUMENTS.forEach(function (inst) {
+    Object.keys(D.TIMEFRAMES).forEach(function (tf) {
+      var s = D.generateSeries(inst.symbol, tf, 0);
+      s.candles.forEach(function (c) {
+        if (!isFinite(c.open) || !isFinite(c.high) || !isFinite(c.low) || !isFinite(c.close)) badOHLC++;
+        if (c.high < Math.max(c.open, c.close) - 1e-12) badOHLC++;
+        if (c.low > Math.min(c.open, c.close) + 1e-12) badOHLC++;
+        if (c.high < c.low) badOHLC++;
+        if (!(c.volume > 0)) badVol++;
+        if (c.open <= 0 || c.close <= 0) badOHLC++;
+      });
+    });
+  });
+  log(badOHLC === 0, 'OHLC validi su 14 strumenti x 5 timeframe x ~425 barre', 'violazioni=' + badOHLC);
+  log(badVol === 0, 'Volumi sempre positivi', 'violazioni=' + badVol);
+  // le candele devono essere in ordine cronologico crescente (asse X del grafico)
+  var notSorted = 0, wrongStep = 0;
+  D.INSTRUMENTS.forEach(function (inst) {
+    Object.keys(D.TIMEFRAMES).forEach(function (tf) {
+      var s = D.generateSeries(inst.symbol, tf, 0);
+      var step = D.TIMEFRAMES[tf].minutes * 60000;
+      for (var i = 1; i < s.candles.length; i++) {
+        if (s.candles[i].time <= s.candles[i - 1].time) notSorted++;
+        if (s.candles[i].time - s.candles[i - 1].time !== step) wrongStep++;
+      }
+    });
+  });
+  log(notSorted === 0, 'Candele in ordine cronologico crescente', 'violazioni=' + notSorted);
+  log(wrongStep === 0, 'Passo temporale costante pari al timeframe', 'violazioni=' + wrongStep);
+  var s1 = D.generateSeries('EUR/USD', 'H1', 0), s2 = D.generateSeries('EUR/USD', 'H1', 0);
+  log(s1.candles[10].close === s2.candles[10].close, 'Serie riproducibile a parità di seed');
+  var s3 = D.generateSeries('EUR/USD', 'H1', 1);
+  log(s3.candles[10].close !== s1.candles[10].close, 'Il tasto Aggiorna cambia lo scenario');
+
+  // ---------- 3. motore previsionale ----------
+  var a = F.analyze(s1.candles, D.instrumentBySymbol('EUR/USD'), 10);
+  log(a.direction === 'BUY' || a.direction === 'SELL' || a.direction === 'NEUTRAL', 'Direzione nel dominio ammesso', a.direction);
+  log(a.confidence > 0 && a.confidence <= 1, 'Confidenza in (0,1]', a.confidence.toFixed(3));
+  log(Math.abs(a.probabilityUp + a.probabilityDown - 1) < 1e-12, 'Probabilità complementari sommano a 1');
+  log(a.projection.length === 10, 'Proiezione con 10 punti (orizzonte 10)', 'punti=' + a.projection.length);
+  log(a.projection[9].upper > a.projection[9].mid && a.projection[9].mid > a.projection[9].lower, 'Banda di previsione ordinata');
+  log(a.levels.length === 4, 'Quattro coppie di livelli probabilistici (2 direzioni ciascuna)', 'livelli=' + a.levels.length);
+  var lv = a.levels;
+  log(lv[0].pUp <= lv[1].pUp && lv[1].pUp <= lv[2].pUp && lv[2].pUp <= lv[3].pUp && lv[0].pUp > 0.1,
+    'Probabilità di tocco crescente avvicinandosi al prezzo',
+    '2ATR=' + lv[0].pUp.toFixed(3) + ' 1.5ATR=' + lv[1].pUp.toFixed(3) + ' 1ATR=' + lv[2].pUp.toFixed(3) + ' 0.5ATR=' + lv[3].pUp.toFixed(3));
+  log(lv[3].pUp > lv[0].pUp && lv[0].pUp > 0.2, 'Livello vicino più probabile di quello lontano (2ATR=' +
+    lv[0].pUp.toFixed(3) + ' < 0.5ATR=' + lv[3].pUp.toFixed(3) + ')');
+  var dirOk = a.score >= 0
+    ? (lv[3].pUp > lv[3].pDn && lv[0].pUp > lv[0].pDn)
+    : (lv[3].pDn > lv[3].pUp && lv[0].pDn > lv[0].pUp);
+  log(dirOk, 'Con segnale ' + a.direction + ' i livelli favorevoli sono più probabili dei contrari',
+    '0.5ATR: su ' + lv[3].pUp.toFixed(2) + ' / giù ' + lv[3].pDn.toFixed(2));
+  log(a.reasons.length >= 5, 'Motivazioni testuali generate', 'righe=' + a.reasons.length);
+  log(a.target > a.price && a.stop < a.price || a.target < a.price && a.stop > a.price, 'TP e SL coerenti con la direzione',
+    (a.score >= 0 ? 'long' : 'short') + ' TP=' + a.target.toFixed(5) + ' SL=' + a.stop.toFixed(5));
+  log(a.rr > 0, 'Rapporto rischio/rendimento positivo', 'R:R=' + a.rr.toFixed(2));
+  log(a.score >= -1 && a.score <= 1, 'Score in [-1,1]', a.score.toFixed(4));
+  var cs = a.components.map(function (c) { return c.score; });
+  log(Math.max.apply(null, cs) <= 1 && Math.min.apply(null, cs) >= -1, 'Ogni componente in [-1,1]', 'n=' + cs.length);
+  var nan = 0;
+  Object.keys(a.indicators).forEach(function (key) {
+    var v = a.indicators[key];
+    if (Array.isArray(v)) nan += isFiniteArr(v);
+  });
+  log(nan === 0, 'Nessun NaN negli indicatori calcolati', 'nan=' + nan);
+
+  // ---------- 4. matrice completa (tutte le coppie x timeframe) ----------
+  var t0 = performance.now();
+  var combos = 0, failures = 0;
+  D.INSTRUMENTS.forEach(function (inst) {
+    Object.keys(D.TIMEFRAMES).forEach(function (tf) {
+      combos++;
+      try {
+        var ser = D.generateSeries(inst.symbol, tf, 0);
+        var an = F.analyze(ser.candles, inst, 10);
+        if (!isFinite(an.score) || !isFinite(an.atr) || !isFinite(an.probabilityUp) ||
+            !isFinite(an.confidence) || !isFinite(an.target) || !isFinite(an.stop)) failures++;
+        if (an.atr <= 0) failures++;
+        if (an.probabilityUp <= 0 || an.probabilityUp >= 1) failures++;
+      } catch (e) { failures++; }
+    });
+  });
+  var ms = performance.now() - t0;
+  log(failures === 0, 'Analisi senza errori su ' + combos + ' combinazioni', 'errori=' + failures + ' in ' + ms.toFixed(0) + ' ms');
+
+  // ---------- 5. backtest ----------
+  var bt = F.backtest(s1.candles, D.instrumentBySymbol('EUR/USD'), 10, { window: 250 });
+  log(bt.count >= 0 && isFinite(bt.winRate) && bt.winRate >= 0 && bt.winRate <= 1, 'Backtest: hit rate valido',
+    'trade=' + bt.count + ' hit=' + (bt.winRate * 100).toFixed(1) + '%');
+  log(bt.equity.length === bt.count, 'Curva equity allineata al numero di operazioni');
+  log(isFinite(bt.totalR) && isFinite(bt.maxDrawdown), 'R totali e drawdown finiti',
+    'R=' + bt.totalR.toFixed(2) + ' maxDD=' + bt.maxDrawdown.toFixed(2));
+  log(bt.maxDrawdown >= 0, 'Drawdown non negativo');
+
+  // ---------- 6. realismo della calibrazione ----------
+  // Riferimenti di mercato: ATR giornaliero tipico in % del prezzo.
+  var REF = {
+    'EUR/USD': 0.62, 'GBP/USD': 0.75, 'USD/JPY': 0.70, 'USD/CHF': 0.58,
+    'AUD/USD': 0.85, 'USD/CAD': 0.62, 'NZD/USD': 0.90, 'EUR/GBP': 0.48,
+    'EUR/JPY': 0.85, 'GBP/JPY': 1.05, 'AUD/JPY': 1.05, 'EUR/AUD': 0.75,
+    'XAU/USD': 1.35, 'XAG/USD': 2.20
+  };
+  function meanAtrPct(symbol, tf, seeds) {
+    var inst = D.instrumentBySymbol(symbol), sum = 0, n = 0;
+    for (var s = 0; s < seeds; s++) {
+      var c = D.generateSeries(symbol, tf, s * 13 + 3).candles;
+      var ind = I.computeAll(c);
+      // media sull'intera serie (dopo il warm-up): misura il livello di
+      // volatilita' del modello, non la fortuna dell'ultimo regime
+      for (var i = 200; i < c.length; i++) {
+        if (ind.atr[i] != null) { sum += ind.atr[i] / c[i].close * 100; n++; }
+      }
+    }
+    return sum / n;
+  }
+  var CAL_SEEDS = 5;
+  var wrongCal = [], worstPair = '', worstErr = 0, maxBarAtr = 0, worstScale = 0, worstScalePair = '';
+  D.INSTRUMENTS.forEach(function (inst) {
+    // Stima dell'ATR giornaliero: l'ATR di H1 viene scalato con la radice del
+    // tempo (24 barre H1 in una giornata di contrattazione).
+    var daily = meanAtrPct(inst.symbol, 'H1', CAL_SEEDS) * Math.sqrt(1440 / D.TIMEFRAMES.H1.minutes);
+    var ref = REF[inst.symbol];
+    var err = Math.abs(daily / ref - 1);
+    if (err > worstErr) { worstErr = err; worstPair = inst.symbol + ' ' + daily.toFixed(2) + '% vs ' + ref + '%'; }
+    if (err > 0.4) wrongCal.push(inst.symbol + ': ' + daily.toFixed(2) + '% vs ' + ref + '%');
+
+    // Coerenza fra timeframe: la serie D1 deve avere lo stesso livello di
+    // volatilita' giornaliera dedotto dalle barre orarie (scaling sqrt-t).
+    var d1 = meanAtrPct(inst.symbol, 'D1', CAL_SEEDS);
+    var ratio = d1 / daily;
+    if (Math.abs(Math.log(ratio)) > worstScale) { worstScale = Math.abs(Math.log(ratio)); worstScalePair = inst.symbol + ' ' + d1.toFixed(2) + '% vs ' + daily.toFixed(2) + '%'; }
+
+    // la barra piu' ampia non deve essere assurda rispetto all'ATR
+    var c = D.generateSeries(inst.symbol, 'H1', 0).candles;
+    var a1 = F.analyze(c, inst, 10);
+    c.forEach(function (b) { maxBarAtr = Math.max(maxBarAtr, Math.abs(b.close - b.open) / a1.atr); });
+  });
+  log(wrongCal.length === 0, 'ATR giornaliero entro il 50% dai riferimenti di mercato',
+    wrongCal.length ? wrongCal.join(', ') : 'scarto massimo ' + (worstErr * 100).toFixed(0) + '% (' + worstPair + ')');
+  log(worstScale < Math.log(1.5), 'Coerenza della scala temporale fra H1 e D1 (scarto < 50%)',
+    'caso peggiore ' + worstScalePair);
+  log(maxBarAtr < 12, 'Nessuna barra estrema oltre 12 ATR', 'massimo = ' + maxBarAtr.toFixed(1) + ' ATR');
+
+  var eur = D.instrumentBySymbol('EUR/USD');
+  var pipsH1 = meanAtrPct('EUR/USD', 'H1', CAL_SEEDS) / 100 * eur.base / D.pipSize(eur);
+  log(pipsH1 > 7 && pipsH1 < 22, 'ATR EUR/USD H1 realistico (7-22 pip)', pipsH1.toFixed(1) + ' pip');
+  var pipsD1 = meanAtrPct('EUR/USD', 'H1', CAL_SEEDS) * Math.sqrt(24) / 100 * eur.base / D.pipSize(eur);
+  log(pipsD1 > 45 && pipsD1 < 100, 'ATR EUR/USD giornaliero realistico (45-100 pip)', pipsD1.toFixed(1) + ' pip');
+  var gold = D.instrumentBySymbol('XAU/USD');
+  var goldPips = meanAtrPct('XAU/USD', 'H1', CAL_SEEDS) / 100 * gold.base / D.pipSize(gold);
+  log(goldPips > 200 && goldPips < 800, 'ATR oro H1 coerente (2-8 USD per barra)', (goldPips / 100).toFixed(2) + ' USD');
+  log(D.pipSize(eur) === 0.0001 && D.pipSize(D.instrumentBySymbol('USD/JPY')) === 0.01,
+    'Dimensione del pip corretta (0,0001 per EUR/USD, 0,01 per USD/JPY)');
+
+  // ---------- 7. Smart Money Concepts ----------
+  var SMC = window.SMC, SEN = window.Sentiment;
+  var smcCandles = D.generateSeries('EUR/USD', 'H1', 0).candles;
+  var smcInst = D.instrumentBySymbol('EUR/USD');
+  var smcInd = I.computeAll(smcCandles);
+  var smc = SMC.analyze(smcCandles, smcInd, smcInst);
+  var LB = 3;
+
+  log(!!SMC && !!SEN, 'Moduli SMC e sentiment caricati');
+
+  // swing: ogni swing e' l'estremo effettivo della propria finestra e la
+  // conferma arriva esattamente a lookback barre di distanza
+  var swingList = SMC.findSwings(smcCandles, LB);
+  var swingBad = 0;
+  swingList.forEach(function (s) {
+    if (s.confirmedAt !== s.index + LB) swingBad++;
+    for (var j = s.index - LB; j <= s.index + LB; j++) {
+      if (j === s.index) continue;
+      if (s.kind === 'high' && smcCandles[j].high > s.price) swingBad++;
+      if (s.kind === 'low' && smcCandles[j].low < s.price) swingBad++;
+    }
+  });
+  log(swingBad === 0 && swingList.length > 20, 'Swing point validi e confermati correttamente',
+    swingList.length + ' swing, violazioni=' + swingBad);
+
+  // struttura: nessun look-ahead e livelli realmente superati in chiusura
+  var evCloseBad = 0, evOrderBad = 0, evLevelBad = 0;
+  smc.structure.events.forEach(function (e) {
+    var c = smcCandles[e.index];
+    if (e.dir === 1 && !(c.close > e.level)) evCloseBad++;
+    if (e.dir === -1 && !(c.close < e.level)) evCloseBad++;
+    if (!(e.swingIndex < e.index) || e.swingConfirmedAt > e.index) evOrderBad++;
+    var match = swingList.some(function (s) {
+      return s.index === e.swingIndex && Math.abs(s.price - e.level) < 1e-12 && s.kind === (e.dir === 1 ? 'high' : 'low');
+    });
+    if (!match) evLevelBad++;
+  });
+  log(evCloseBad === 0, 'BOS/CHoCH: la chiusura supera davvero il livello rotto',
+    smc.structure.events.length + ' eventi, violazioni=' + evCloseBad);
+  log(evOrderBad === 0, 'Nessun look-ahead: ogni evento usa solo swing gia\u0300 confermati');
+  log(evLevelBad === 0, 'Il livello rotto coincide con uno swing confermato');
+
+  // order block: geometria, colore della candela e stato coerente col prezzo
+  var obBad = 0;
+  smc.orderBlocks.forEach(function (z) {
+    if (!(z.top >= z.bottom)) obBad++;
+    if (!(z.formedAt <= z.eventIndex)) obBad++;
+    var c = smcCandles[z.formedAt];
+    if (z.kind === 'bullish' && !(c.close < c.open)) obBad++;
+    if (z.kind === 'bearish' && !(c.close > c.open)) obBad++;
+    for (var k = z.formedAt + 1; k < smcCandles.length; k++) {
+      var b = smcCandles[k];
+      if (z.kind === 'bullish') {
+        if (b.close < z.bottom) { if (z.status !== 'invalidated') obBad++; break; }
+        if (b.low <= z.top && z.status === 'fresh') obBad++;
+      } else {
+        if (b.close > z.top) { if (z.status !== 'invalidated') obBad++; break; }
+        if (b.high >= z.bottom && z.status === 'fresh') obBad++;
+      }
+    }
+  });
+  log(obBad === 0 && smc.orderBlocks.length > 0, 'Order block: geometria e stato coerenti con i prezzi successivi',
+    smc.orderBlocks.length + ' OB, violazioni=' + obBad);
+
+  // fair value gap: verifica diretta sui tre candeloni
+  var fvgBad = 0;
+  smc.fvgs.forEach(function (z) {
+    var a = smcCandles[z.formedAt - 2], c = smcCandles[z.formedAt];
+    if (!(z.top > z.bottom)) fvgBad++;
+    if (z.kind === 'bullish' && !(c.low > a.high)) fvgBad++;
+    if (z.kind === 'bearish' && !(a.low > c.high)) fvgBad++;
+    var size = z.kind === 'bullish' ? c.low - a.high : a.low - c.high;
+    if (Math.abs(size - z.size) > 1e-9) fvgBad++;
+  });
+  log(fvgBad === 0 && smc.fvgs.length > 0, 'Fair value gap coerenti con i tre candeloni di origine',
+    smc.fvgs.length + ' FVG, violazioni=' + fvgBad);
+
+  // liquidita': almeno due estremi per pool e sweep verificati sui prezzi
+  var liqBad = 0;
+  smc.liquidity.forEach(function (l) {
+    if (l.members < 2) liqBad++;
+    if (l.sweptAt != null) {
+      var c = smcCandles[l.sweptAt];
+      if (l.kind === 'buy-side' && !(c.high > l.price && c.close < l.price)) liqBad++;
+      if (l.kind === 'sell-side' && !(c.low < l.price && c.close > l.price)) liqBad++;
+    }
+    if (l.taken && l.sweptAt == null) {
+      var ok = false;
+      for (var k = l.confirmedAt; k < smcCandles.length; k++) {
+        if (l.kind === 'buy-side' ? smcCandles[k].high > l.price : smcCandles[k].low < l.price) ok = true;
+      }
+      if (!ok) liqBad++;
+    }
+  });
+  log(liqBad === 0, 'Pool di liquidita\u0300 e sweep verificati sui prezzi',
+    smc.liquidity.length + ' pool, violazioni=' + liqBad);
+
+  // range di riferimento, premio/sconto e OTE
+  var rghi = -Infinity, rglo = Infinity;
+  for (var ri = smc.range.start; ri < smcCandles.length; ri++) {
+    if (smcCandles[ri].high > rghi) rghi = smcCandles[ri].high;
+    if (smcCandles[ri].low < rglo) rglo = smcCandles[ri].low;
+  }
+  var r = smc.range;
+  var rangeOk = r.high >= r.low &&
+    Math.abs(rghi - r.high) < 1e-12 && Math.abs(rglo - r.low) < 1e-12 &&
+    r.equilibrium >= r.low && r.equilibrium <= r.high &&
+    r.ote.top <= r.high + 1e-12 && r.ote.bottom >= r.low - 1e-12 &&
+    r.position > -0.6 && r.position < 1.6;
+  log(rangeOk, 'Range, equilibrio e OTE coerenti con i prezzi',
+    r.low.toFixed(5) + ' - ' + r.high.toFixed(5) + ' \u00b7 posizione ' + (r.position * 100).toFixed(0) + '%');
+
+  // punteggio e scenario operativo
+  log(smc.components.length === 6 && smc.score >= -1 && smc.score <= 1,
+    'Sei componenti SMC con punteggio in [-1,1]', 'score=' + smc.score.toFixed(3));
+  var p = smc.plan;
+  var planOk = p.direction === 1
+    ? (p.stop < p.marketEntry && p.tp2 > p.marketEntry)
+    : (p.stop > p.marketEntry && p.tp2 < p.marketEntry);
+  log(planOk, 'Scenario SMC coerente: stop e target ai lati corretti del prezzo',
+    (p.direction === 1 ? 'long' : 'short') + ' entry ' + p.marketEntry.toFixed(5) +
+    ' stop ' + p.stop.toFixed(5) + ' tp2 ' + p.tp2.toFixed(5));
+  var entrySideOk = p.direction === 1
+    ? (p.limitEntry <= p.marketEntry + 1e-12 && p.tp1 >= p.marketEntry)
+    : (p.limitEntry >= p.marketEntry - 1e-12 && p.tp1 <= p.marketEntry);
+  log(entrySideOk, 'Ingresso limite e primo obiettivo dal lato corretto rispetto al prezzo',
+    'limite ' + p.limitEntry.toFixed(5) + ' \u00b7 tp1 ' + p.tp1.toFixed(5) +
+    ' \u00b7 prezzo ' + p.marketEntry.toFixed(5) + ' (' + (p.direction === 1 ? 'long' : 'short') + ')');
+  log(p.rr > 0 && isFinite(p.rr), 'Rapporto rischio/rendimento SMC calcolato', 'R:R=' + p.rr.toFixed(2));
+  log(smc.reasons.length >= 4, 'Narrazione SMC generata', 'righe=' + smc.reasons.length);
+
+  // determinismo del motore
+  var smc2 = SMC.analyze(smcCandles, smcInd, smcInst);
+  log(smc2.score === smc.score && smc2.orderBlocks.length === smc.orderBlocks.length &&
+    smc2.structure.events.length === smc.structure.events.length,
+    'Analisi SMC deterministica a parita\u0300 di dati');
+
+  // ---------- 8. Sentiment ----------
+  var cache = D.INSTRUMENTS.map(function (inst) {
+    var c = D.generateSeries(inst.symbol, 'H1', 0).candles;
+    return { symbol: inst.symbol, instrument: inst, candles: c, ind: I.computeAll(c) };
+  });
+  var sen = SEN.analyze(cache, 'EUR/USD', smcInst);
+
+  log(sen.strength.list.length === 10, 'Forza calcolata per tutte le 10 divise',
+    sen.strength.list.map(function (x) { return x.currency; }).slice(0, 4).join(',') + '\u2026');
+  log(sen.strength.list.every(function (x) { return x.score >= 0 && x.score <= 100; }),
+    'Punteggi di forza normalizzati in 0-100',
+    'prima=' + sen.strength.list[0].currency + ' ' + sen.strength.list[0].score.toFixed(0));
+  log(sen.strength.list[0].score >= sen.strength.list[9].score && sen.strength.list[0].rank === 1,
+    'Classifica delle divise ordinata per punteggio');
+
+  // variabili di riferimento usate dai controlli di coerenza
+  var med = 20, li = cache[0].candles.length - 1;
+  var rocPair = (cache[0].candles[li].close - cache[0].candles[li - med].close) / cache[0].candles[li - med].close;
+  var diffStr = sen.strength.byCurrency.EUR.medium - sen.strength.byCurrency.USD.medium;
+
+  // proprieta' esatta: la forza grezza di una divisa e' la media dei rendimenti
+  // firmati di tutte le coppie in cui compare
+  var rawBad = 0, rawChecked = 0;
+  ['EUR', 'USD', 'JPY', 'XAU'].forEach(function (cur) {
+    var acc = [], w = 20;
+    D.INSTRUMENTS.forEach(function (inst) {
+      var p = inst.symbol.split('/');
+      if (p[0] !== cur && p[1] !== cur) return;
+      var c = D.generateSeries(inst.symbol, 'H1', 0).candles;
+      var i = c.length - 1;
+      var roc = (c[i].close - c[i - w].close) / c[i - w].close;
+      acc.push(p[0] === cur ? roc : -roc);
+    });
+    var mean = acc.reduce(function (x, y) { return x + y; }, 0) / acc.length * 100;
+    if (Math.abs(mean - sen.strength.byCurrency[cur].medium) > 1e-9) rawBad++;
+    rawChecked++;
+  });
+  log(rawBad === 0 && rawChecked === 4,
+    'Forza grezza = media dei rendimenti firmati delle coppie della divisa',
+    rawChecked + ' divise verificate, violazioni=' + rawBad);
+
+  // con una sola coppia in osservazione la forza relativa deve rispecchiare
+  // esattamente il movimento del cambio (segno incluso)
+  var soloCache = [{ symbol: 'EUR/USD', instrument: smcInst, candles: cache[0].candles, ind: cache[0].ind }];
+  var senSolo = SEN.analyze(soloCache, 'EUR/USD', smcInst);
+  var dSolo = senSolo.strength.byCurrency.EUR.medium - senSolo.strength.byCurrency.USD.medium;
+  log(Math.sign(dSolo) === Math.sign(rocPair),
+    'Con una sola coppia la forza relativa segue il segno del cambio',
+    'differenziale ' + dSolo.toFixed(1) + ' vs cambio ' + (rocPair * 100).toFixed(3) + '%');
+
+  // sull'intero paniere il differenziale deve concordare con la media dei
+  // rendimenti delle coppie della divisa base meno quelle della quotata
+  var accEur = [], accUsd = [];
+  D.INSTRUMENTS.forEach(function (inst) {
+    var p = inst.symbol.split('/');
+    var c = D.generateSeries(inst.symbol, 'H1', 0).candles;
+    var i = c.length - 1;
+    var roc = (c[i].close - c[i - 20].close) / c[i - 20].close;
+    if (p[0] === 'EUR') accEur.push(roc);
+    if (p[1] === 'EUR') accEur.push(-roc);
+    if (p[0] === 'USD') accUsd.push(roc);
+    if (p[1] === 'USD') accUsd.push(-roc);
+  });
+  function meanOf(a) { return a.reduce(function (x, y) { return x + y; }, 0) / a.length; }
+  var expected = (meanOf(accEur) - meanOf(accUsd)) * 100;
+  log(Math.abs(expected - diffStr) < 1e-9,
+    'Differenziale EUR-USD coerente con il paniere completo',
+    'atteso ' + expected.toFixed(3) + '% \u00b7 calcolato ' + diffStr.toFixed(3) + '%');
+
+  log(sen.retail.longPct > 0 && sen.retail.longPct < 100 &&
+    Math.abs(sen.retail.longPct + sen.retail.shortPct - 100) < 1e-9,
+    'Posizionamento retail con percentuali complementari',
+    sen.retail.longPct.toFixed(1) + '% long / ' + sen.retail.shortPct.toFixed(1) + '% short');
+  log(Math.abs(sen.retail.longPct - 50) < 1 ||
+    Math.sign(sen.retail.contrarianScore) === -Math.sign(sen.retail.longPct - 50),
+    'Lettura contro-aria opposta al posizionamento della folla',
+    'score contro-ario ' + sen.retail.contrarianScore.toFixed(2));
+
+  log(sen.risk.score >= 0 && sen.risk.score <= 100 && sen.risk.volIndex >= 0 && sen.risk.volIndex <= 100,
+    'Indici di propensione al rischio e di volatilita\u0300 in 0-100',
+    sen.risk.label + ' ' + sen.risk.score.toFixed(0) + ', volatilita\u0300 ' + sen.risk.volIndex.toFixed(0));
+  log(['Risk-on', 'Risk-off', 'Neutro'].indexOf(sen.risk.label) >= 0,
+    'Etichetta del regime di rischio valida', sen.risk.label);
+
+  log(sen.institutional.list.length === 10 && sen.institutional.list[0].net >= sen.institutional.list[9].net,
+    'Posizionamento istituzionale per 10 divise, ordinato',
+    'piu\u0300 affollata ' + sen.institutional.crowded.currency + ' ' + sen.institutional.crowded.net.toFixed(0) + '%');
+
+  log(sen.components.length === 4 && sen.score >= -1 && sen.score <= 1,
+    'Punteggio di sentiment su 4 componenti, in [-1,1]', 'score=' + sen.score.toFixed(3));
+  log(['FORTE RIALZO', 'RIALZO', 'NEUTRO', 'RIBASSO', 'FORTE RIBASSO'].indexOf(sen.bias) >= 0,
+    'Etichetta di sentiment valida', sen.bias);
+  log(sen.reasons.length >= 4, 'Narrazione di sentiment generata', 'righe=' + sen.reasons.length);
+
+  // confluenza dei tre modelli
+  var cfAll = SEN.confluence(0.5, 0.4, 0.6);
+  log(cfAll.direction === 'BUY' && cfAll.aligned && cfAll.count === 3,
+    'Confluenza: tre modelli concordi riconosciuti', 'score=' + cfAll.score.toFixed(3));
+  var cfMix = SEN.confluence(0.5, -0.5, 0.0);
+  log(!cfMix.aligned && cfMix.count <= 2, 'Confluenza: disaccordo riconosciuto', cfMix.text.slice(0, 40) + '\u2026');
+  var cfNone = SEN.confluence(0.05, -0.04, 0.02);
+  log(cfNone.direction === 'NEUTRAL', 'Confluenza: segnali deboli restano neutri', 'score=' + cfNone.score.toFixed(3));
+
+  // ---------- 8b. feed dei dati reali (modulo ponte) ----------
+  var FX = window.ForexFeed;
+  log(!!FX && !!FX.TF_FALLBACK && !!FX.TF_FALLBACK.M10,
+    'Modulo feed presente con il timeframe M10', FX.TF_FALLBACK ? FX.TF_FALLBACK.M10.interval : 'mancante');
+  log(!!D.TIMEFRAMES.M10 && D.TIMEFRAMES.M10.minutes === 10, 'Il timeframe M10 esiste nel generatore');
+
+  // pulizia delle candele: righe illeggibili, tempi disordinati, OHLC incoerenti
+  var filthy = {
+    candles: [
+      { time: 1000, open: 1.2, high: 1.3, low: 1.1, close: 1.25, volume: 0 },
+      { time: 1000, open: 1.25, high: 1.4, low: 1.2, close: 1.35, volume: 10 },
+      { time: 500, open: 1.3, high: 1.31, low: 1.29, close: 1.30, volume: 5 },
+      { time: 2000, open: null, high: 1.4, low: 1.2, close: 1.3, volume: 1 },
+      { time: 3000, open: 1.3, high: 'aaa', low: 1.29, close: 1.305, volume: 2 },
+      { time: 4000, open: 1.31, high: 1.33, low: 1.30, close: 1.32, volume: 3 }
+    ]
+  };
+  var clean = FX.sanitizeCandles(filthy.candles);
+  log(clean.candles.length === 2 && clean.dropped === 4,
+    'Le candele illeggibili vengono scartate', clean.candles.length + ' buone, ' + clean.dropped + ' scartate');
+  log(clean.candles[0].time === 1000 && clean.candles[1].time === 4000, 'Restano solo le righe in ordine');
+  log(clean.candles[0].high === 1.3 && clean.candles[0].low === 1.1, 'Massimi e minimi corretti');
+  log(clean.candles[1].volume === 3, 'Il volume viene normalizzato a numero');
+
+  // costruzione della serie dal payload del server
+  var payload = {
+    ok: true, symbol: 'EUR/USD', timeframe: 'M10', source: 'yahoo-finance',
+    provider: 'Yahoo Finance', interval: '5m', history: '60 giorni', aggregated: true,
+    skippedEmpty: 2, hasVolume: false, stale: false,
+    candles: []
+  };
+  for (var pi = 0; pi < 120; pi++) {
+    payload.candles.push({
+      time: 1700000000000 + pi * 600000,
+      open: 1.10 + pi * 0.0001, high: 1.10 + pi * 0.0002,
+      low: 1.09 + pi * 0.0001, close: 1.10 + pi * 0.00015, volume: 0
+    });
+  }
+  var realSeries = FX.seriesFromPayload(payload, D.instrumentBySymbol('EUR/USD'));
+  log(realSeries.candles.length === 120 && realSeries.source === 'yahoo-finance' &&
+      realSeries.info.aggregated && !realSeries.info.hasVolume,
+    'La serie del ponte viene incapsulata nel formato dell\u2019app', realSeries.candles.length + ' candele');
+
+  // una serie troppo corta deve essere rifiutata, non accettata a metà
+  var shortRejected = false;
+  try {
+    FX.seriesFromPayload({ ok: true, candles: [payload.candles[0]] }, D.instrumentBySymbol('EUR/USD'));
+  } catch (e) { shortRejected = true; }
+  log(shortRejected, 'Una serie troppo corta viene rifiutata');
+
+  var bases = FX.candidateBases();
+  log(Array.isArray(bases) && bases.length >= 1 && typeof bases[0] === 'string',
+    'Indirizzi candidati del ponte generati', bases[0] || '(vuoto)');
+
+  // confluenza ridotta: senza il sentiment i pesi si ricalcolano su 2 modelli
+  var cfReduced = SEN.confluence(0.5, 0.4, 0.6, { sentimentReliable: false });
+  var expectedRed = (0.5 * 0.34 + 0.4 * 0.38) / (0.34 + 0.38);
+  log(cfReduced.parts.length === 2 && cfReduced.excluded[0] === 'Sentiment' &&
+      Math.abs(cfReduced.score - expectedRed) < 1e-9,
+    'Confluenza ridotta: sentiment escluso, pesi ricalcolati',
+    'score=' + cfReduced.score.toFixed(4) + ' atteso ' + expectedRed.toFixed(4));
+  log(cfAll.parts.length === 3 && cfAll.excluded.length === 0 && cfAll.text.indexOf('I tre modelli') === 0,
+    'La confluenza piena resta identica a prima');
+
+  // sentiment in universo reale ridotto (una sola coppia vera)
+  var oneReal = cache.map(function (e, idx) {
+    return Object.assign({}, e, { simulated: idx !== 0 });
+  });
+  var senReduced = SEN.analyze(oneReal, 'EUR/USD', smcInst, { includeSimulated: false });
+  log(!!senReduced.scope && senReduced.scope.partial === true && senReduced.scope.realPairs === 1 &&
+      senReduced.scope.simulatedPairs === cache.length - 1,
+    'Lo studio di sentiment dichiara l\u2019universo ridotto',
+    'reali=' + senReduced.scope.realPairs + ' simulati=' + senReduced.scope.simulatedPairs);
+  var senFull = SEN.analyze(oneReal, 'EUR/USD', smcInst, { includeSimulated: true });
+  log(senFull.strength.list.length === 10 && senFull.components.length === 4 && senFull.reasons.length >= 4,
+    'Con il contesto simulato lo studio torna completo',
+    'valute=' + senFull.strength.list.length + ' componenti=' + senFull.components.length + ' ragioni=' + senFull.reasons.length);
+
+  // ---------- 9. Report divulgativo ----------
+  var REP = window.Report;
+  var reportCtx = {
+    pair: 'EUR/USD', tf: 'H1', horizon: 10,
+    instrument: smcInst, candles: smcCandles,
+    analysis: a, smc: smc, sentiment: sen, confluence: cfAll
+  };
+  var rep = REP.build(reportCtx);
+
+  log(!!REP && rep.blocks.length > 10, 'Report costruito', rep.blocks.length + ' blocchi');
+
+  // il report dichiara la fonte dei dati quando c'e' il ponte attivo
+  var repReal = REP.build(Object.assign({}, reportCtx, {
+    source: {
+      mode: 'real',
+      info: {
+        provider: 'Yahoo Finance', yahooSymbol: 'EURUSD=X', interval: '5m',
+        history: '60 giorni', aggregated: true, bars: 500, stale: false,
+        forming: true, lastBarTime: Date.now(), note: null
+      },
+      error: null
+    }
+  }));
+  log(repReal.blocks.some(function (b) { return b.type === 'h2' && b.text.indexOf('fonte dei dati') > 0; }),
+    'Il report include la sezione \u201cLa fonte dei dati\u201d');
+  var repRealText = repReal.blocks.filter(function (b) { return b.type !== 'glossary'; })
+    .map(function (b) {
+      if (b.type === 'p' || b.type === 'callout') return b.text;
+      if (b.type === 'ul') return b.items.join(' ');
+      if (b.type === 'table') return b.rows.map(function (r) { return r.join(' '); }).join(' ');
+      return '';
+    }).join(' ');
+  log(repRealText.indexOf('Yahoo Finance') >= 0, 'Il report cita il fornitore dei dati reali');
+
+  // e quando il ponte manca avvisa che i dati sono simulati
+  var repSim = REP.build(Object.assign({}, reportCtx, {
+    source: { mode: 'sim', info: null, error: 'server dati locale non trovato: modalità simulata' }
+  }));
+  log(repSim.blocks.some(function (b) {
+    return b.type === 'callout' && b.title.indexOf('dati simulati') > 0;
+  }), 'Il report avvisa quando i dati sono simulati');
+
+  var sections = rep.blocks.filter(function (b) { return b.type === 'h2'; });
+  log(sections.length >= 6, 'Sezioni presenti nel report',
+    sections.map(function (s) { return s.text.slice(0, 3); }).join(' '));
+
+  var glossaryBlock = rep.blocks.filter(function (b) { return b.type === 'glossary'; })[0];
+  log(!!glossaryBlock && glossaryBlock.items.length >= 20,
+    'Glossario presente e ampio', (glossaryBlock ? glossaryBlock.items.length : 0) + ' voci');
+  var glossaryBad = 0;
+  (glossaryBlock ? glossaryBlock.items : []).forEach(function (g) {
+    if (!g.term || g.term.length < 2) glossaryBad++;
+    if (!g.text || g.text.length < 30) glossaryBad++;
+  });
+  log(glossaryBad === 0, 'Ogni voce di glossario ha termine e spiegazione', 'voci difettose=' + glossaryBad);
+
+  // testo del corpo (escluso il glossario), in minuscolo
+  function blockText(b) {
+    if (b.type === 'p' || b.type === 'h2') return b.text;
+    if (b.type === 'callout') return b.title + ' ' + b.text;
+    if (b.type === 'ul') return b.items.join(' ');
+    if (b.type === 'table') return b.rows.map(function (r) { return r.join(' '); }).join(' ');
+    return '';
+  }
+  var bodyText = rep.blocks
+    .filter(function (b) { return b.type !== 'glossary'; })
+    .map(blockText).join(' ').toLowerCase();
+
+  // ogni termine tecnico usato nel testo deve avere una voce di glossario:
+  // e' la verifica automatica della richiesta "spiegazione dei termini usati"
+  var missing = [];
+  rep.trackedTerms.forEach(function (t) {
+    var term = t.toLowerCase();
+    if (bodyText.indexOf(term) === -1) return;
+    var covered = rep.glossary.some(function (g) {
+      var g2 = g.term.toLowerCase();
+      return g2.indexOf(term) !== -1 || term.indexOf(g2) !== -1;
+    });
+    if (!covered) missing.push(t);
+  });
+  log(missing.length === 0, 'Ogni termine tecnico usato nel report e\u0300 spiegato nel glossario',
+    missing.length ? 'non spiegati: ' + missing.join(', ') : 'tutti i termini usati sono coperti');
+
+  // frasi brevi: si controllano i paragrafi e i riquadri (il testo discorsivo)
+  var prose = rep.blocks.filter(function (b) {
+    return b.type === 'p' || b.type === 'callout';
+  }).map(function (b) { return b.text; }).join(' ');
+  var sentences = prose.split(/[.!?]+/).map(function (s) { return s.trim(); })
+    .filter(function (s) { return s.length > 0; });
+  var words = sentences.map(function (s) { return s.split(/\s+/).length; });
+  var maxWords = Math.max.apply(null, words);
+  var avgWords = words.reduce(function (x, y) { return x + y; }, 0) / words.length;
+  var longSentences = words.filter(function (w) { return w > 48; }).length;
+  log(longSentences === 0 && avgWords <= 32, 'Frasi brevi e leggibili',
+    'media ' + avgWords.toFixed(1) + ' parole, massimo ' + maxWords + ' parole, frasi oltre 48 parole=' + longSentences);
+
+  // nessun segnaposto o numero non valido (attenzione a non confondere
+  // parole italiane come "annulla" con il valore nullo)
+  var textOut = REP.toText(rep);
+  var htmlOut = REP.toHtml(rep);
+  var badHits = [];
+  ['NaN', 'undefined', '[object'].forEach(function (p) {
+    if (textOut.indexOf(p) >= 0 || htmlOut.indexOf(p) >= 0) badHits.push(p);
+  });
+  if (/\bnull\b/.test(textOut) || /\bnull\b/.test(htmlOut)) badHits.push('null');
+  log(badHits.length === 0, 'Nessun valore non valido nel report',
+    badHits.length ? 'trovati: ' + badHits.join(', ') : 'testo ' + textOut.length + ' caratteri');
+  log(textOut.indexOf('GLOSSARIO') >= 0 && htmlOut.indexOf('rep-glossary') >= 0,
+    'Versioni testo e HTML complete');
+  log(htmlOut.indexOf('rep-callout') >= 0 && htmlOut.indexOf('rep-table') >= 0,
+    'HTML con riquadri di sintesi e tabelle');
+
+  // coerenza fra report e dati: prezzi e giudizi devono corrispondere
+  var priceStr = a.price.toFixed(smcInst.digits);
+  log(textOut.indexOf(priceStr) >= 0 &&
+    textOut.indexOf(a.target.toFixed(smcInst.digits)) >= 0 &&
+    textOut.indexOf(a.stop.toFixed(smcInst.digits)) >= 0,
+    'Prezzo e livelli del piano tecnico compaiono nel report',
+    'prezzo ' + priceStr + ', obiettivo ' + a.target.toFixed(smcInst.digits) + ', stop ' + a.stop.toFixed(smcInst.digits));
+  log(textOut.indexOf(smc.plan.tp2.toFixed(smcInst.digits)) >= 0,
+    'Il secondo obiettivo SMC compare nel report', smc.plan.tp2.toFixed(smcInst.digits));
+  var summaryCallout = rep.blocks.filter(function (b) { return b.type === 'callout'; })[0];
+  var dirWord = cfAll.direction === 'BUY' ? 'rialzista' : cfAll.direction === 'SELL' ? 'ribassista' : 'incerto';
+  log(summaryCallout.text.indexOf(dirWord) >= 0, 'La sintesi usa l\u2019orientamento corretto',
+    'confluenza ' + cfAll.direction + ' \u2192 "' + dirWord + '"');
+
+  // un secondo scenario: metallo con 2 decimali, timeframe giornaliero
+  var goldCandles = D.generateSeries('XAU/USD', 'D1', 3).candles;
+  var goldInst = D.instrumentBySymbol('XAU/USD');
+  var goldInd = I.computeAll(goldCandles);
+  var goldA = F.analyze(goldCandles, goldInst, 20);
+  var goldSmc = SMC.analyze(goldCandles, goldInd, goldInst);
+  var goldCache = [{ symbol: 'XAU/USD', instrument: goldInst, candles: goldCandles, ind: goldInd }];
+  var goldSen = SEN.analyze(goldCache, 'XAU/USD', goldInst);
+  var goldConf = SEN.confluence(goldA.score, goldSmc.score, goldSen.score);
+  var goldRep = REP.build({
+    pair: 'XAU/USD', tf: 'D1', horizon: 20, instrument: goldInst, candles: goldCandles,
+    analysis: goldA, smc: goldSmc, sentiment: goldSen, confluence: goldConf
+  });
+  var goldText = REP.toText(goldRep);
+  log(goldText.indexOf('XAU/USD') >= 0 && /NaN|undefined/.test(goldText) === false,
+    'Report corretto anche su XAU/USD giornaliero',
+    'prezzo formattato ' + goldA.price.toFixed(goldInst.digits) + ', ' + goldRep.blocks.length + ' blocchi');
+  var rep2 = REP.build(reportCtx);
+  log(rep2.blocks.length === rep.blocks.length, 'Report deterministico a parita\u0300 di dati');
+
+  // ---------- 10. esempio numerico ----------
+  info('');
+  info('Esempio EUR/USD H1, orizzonte 10 candele:');
+  info('  prezzo        = ' + a.price.toFixed(5));
+  info('  score         = ' + a.score.toFixed(4) + '   direzione = ' + a.direction);
+  info('  confidenza    = ' + (a.confidence * 100).toFixed(1) + '%   P(rialzo) = ' + (a.probabilityUp * 100).toFixed(1) + '%');
+  info('  ATR(14)       = ' + a.atr.toFixed(5) + '  (' + a.atrPct.toFixed(3) + '% del prezzo)');
+  info('  movimento atteso = ' + (a.expectedMove / D.pipSize(D.instrumentBySymbol('EUR/USD'))).toFixed(1) + ' pip');
+  info('  TP / SL       = ' + a.target.toFixed(5) + ' / ' + a.stop.toFixed(5) + '   R:R ' + a.rr.toFixed(2));
+  info('  ADX(14)       = ' + a.adx.toFixed(1) + '   regime = ' + (a.trendRegime > 0.6 ? 'trend' : a.trendRegime < 0.3 ? 'laterale' : 'misto'));
+  info('  backtest      = ' + bt.count + ' operazioni, hit rate ' + (bt.winRate * 100).toFixed(1) +
+    '%, media ' + bt.avgR.toFixed(3) + ' R/trade, profit factor ' + (isFinite(bt.profitFactor) ? bt.profitFactor.toFixed(2) : 'inf'));
+
+  } catch (err) {
+    fail++;
+    var crash = 'FAIL  ECCEZIONE DURANTE I TEST: ' + (err && err.message ? err.message : err) +
+      ' @ ' + (err && err.stack ? String(err.stack).split('\n')[1] : 'posizione sconosciuta');
+    var pcrash = document.createElement('pre');
+    pcrash.className = 'fail';
+    pcrash.textContent = crash;
+    out.appendChild(pcrash);
+    reportLines.push(crash);
+  }
+
+  var sum = document.getElementById('summary');
+  sum.textContent = fail === 0
+    ? 'TUTTI I TEST SUPERATI: ' + pass + '/' + (pass + fail) + (errors.length ? '  (errori JS: ' + errors.join('; ') + ')' : '')
+    : 'TEST FALLITI: ' + fail + ' su ' + (pass + fail);
+  sum.className = fail === 0 ? 'pass' : 'fail';
+  reportLines.push('');
+  reportLines.push('SUMMARY: ' + sum.textContent + (errors.length ? ' | errori JS: ' + errors.join(' ; ') : ''));
+
+  // Invio del report in testo semplice all'harness locale (se presente).
+  // In apertura diretta con file:// l'invio fallisce silenziosamente.
+  try {
+    var payload = reportLines.join('\n');
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/report', false);
+    xhr.setRequestHeader('Content-Type', 'text/plain');
+    xhr.send(payload);
+  } catch (e) { /* nessun harness in ascolto: nessun problema */ }
+})();
+</script>
+</body>
+</html>

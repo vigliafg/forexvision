@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<title>ForexVision - smoke test interfaccia</title>
+<style>
+  body{background:#0b1017;color:#e6edf7;font:13px/1.5 "JetBrains Mono",monospace;margin:0}
+  #log{padding:14px}
+  .pass{color:#18c98a}.fail{color:#f2555a}.info{color:#8fa3bf}
+  #summary{font-size:18px;font-weight:700;padding:8px 12px;border:1px solid #22304a;border-radius:8px;background:#141d2b;display:inline-block;margin:12px 14px}
+  iframe{width:1400px;height:2000px;border:0;position:absolute;left:-10000px;top:0}
+</style>
+</head>
+<body>
+<div id="summary">in esecuzione...</div>
+<div id="log"></div>
+<iframe id="app" src="../index.html?sim=1"></iframe>
+<script>
+(function () {
+  var out = document.getElementById('log');
+  var lines = [], pass = 0, fail = 0;
+
+  function log(ok, label, extra) {
+    ok ? pass++ : fail++;
+    var p = document.createElement('pre');
+    p.className = ok ? 'pass' : 'fail';
+    p.textContent = (ok ? 'PASS  ' : 'FAIL  ') + label + (extra ? '   |  ' + extra : '');
+    out.appendChild(p);
+    lines.push(p.textContent);
+  }
+  function info(t) {
+    var p = document.createElement('pre');
+    p.className = 'info';
+    p.textContent = t;
+    out.appendChild(p);
+    lines.push(t);
+  }
+  function $(sel, root) { return (root || frame.contentDocument).querySelector(sel); }
+  function $$(sel, root) { return Array.prototype.slice.call((root || frame.contentDocument).querySelectorAll(sel)); }
+  function canvasHasContent(cv, root) {
+    try {
+      var ctx = cv.getContext('2d');
+      var d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+      var first = [d[0], d[1], d[2]], distinct = false;
+      for (var i = 4; i < d.length; i += 4 * 97) {
+        if (d[i] !== first[0] || d[i + 1] !== first[1] || d[i + 2] !== first[2]) { distinct = true; break; }
+      }
+      return distinct;
+    } catch (e) { return false; }
+  }
+
+  var frame = document.getElementById('app');
+
+  frame.addEventListener('load', function () {
+    setTimeout(runChecks, 2600);   // attende il primo tick e il backtest differito
+  });
+
+  function report() {
+    var sum = document.getElementById('summary');
+    sum.textContent = (fail === 0 ? 'SMOKE TEST SUPERATO: ' : 'SMOKE TEST FALLITO: ') + pass + '/' + (pass + fail + ' test');
+    sum.className = fail === 0 ? 'pass' : 'fail';
+    lines.push('');
+    lines.push('SUMMARY: ' + sum.textContent);
+    try {
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', '/report', false);
+      xhr.setRequestHeader('Content-Type', 'text/plain');
+      xhr.send(lines.join('\n'));
+    } catch (e) {}
+  }
+
+  function runChecks() {
+    var w = frame.contentWindow, doc = frame.contentDocument;
+
+    log(!!w.ForexData && !!w.Indicators && !!w.Forecast && !!w.ForexChart, 'I quattro moduli JS sono caricati nel documento');
+
+    // prezzi e intestazione
+    var lp = $('#lastPrice').textContent.trim();
+    log(/^\d/.test(lp), 'Prezzo di mercato valorizzato', 'ultimo prezzo = ' + lp);
+    log(/\d/.test($('#lastChange').textContent), 'Variazione percentuale mostrata', $('#lastChange').textContent.trim());
+    log($('#chartTitle').textContent.indexOf('EUR/USD') === 0, 'Titolo del grafico coerente', $('#chartTitle').textContent);
+    log(/\d{1,2}:\d{2}/.test($('#clock').textContent), 'Orologio attivo', $('#clock').textContent);
+
+    // segnale
+    var badge = $('#signalBadge');
+    var dir = $('#signalBadge .signal-dir').textContent.trim();
+    log(/^(ACQUISTO|VENDITA|NEUTRO)$/.test(dir), 'Direzione del segnale mostrata', dir);
+    log(/buy|sell|neutral/.test(badge.className), 'Badge con classe di stato', badge.className);
+    log(/%/.test($('#signalBadge .signal-conf').textContent), 'Confidenza mostrata', $('#signalBadge .signal-conf').textContent.trim());
+    var gaugeLeft = $('#gaugeFill').style.left;
+    log(/%$/.test(gaugeLeft), 'Indicatore di sintesi posizionato', gaugeLeft);
+
+    // piano operativo
+    ['planEntry', 'planTp', 'planSl', 'planRr', 'planExp', 'planAtr'].forEach(function (id) {
+      var v = $('#' + id).textContent.trim();
+      log(v && v !== '\u2014', 'Piano operativo: ' + id + ' valorizzato', v);
+    });
+    var tp = parseFloat($('#planTp').textContent), sl = parseFloat($('#planSl').textContent), en = parseFloat($('#planEntry').textContent);
+    log(tp !== en && sl !== en && (tp - en) * (sl - en) < 0, 'TP e SL ai lati opposti del prezzo di ingresso',
+      'entry ' + en + ' tp ' + tp + ' sl ' + sl);
+
+    // motivazioni e proiezione
+    log($$('#reasonList li').length >= 5, 'Elenco motivazioni compilato', 'righe = ' + $$('#reasonList li').length);
+    log($$('#fcSummary .fc-tile').length === 6, 'Sei riquadri di sintesi previsionale', 'tile = ' + $$('#fcSummary .fc-tile').length);
+    log($$('#fcLevels .lvl').length === 8, 'Otto barre di probabilità sui livelli', 'barre = ' + $$('#fcLevels .lvl').length);
+    var w0 = $$('#fcLevels .lvl-fill').map(function (e) { return parseInt(e.style.width, 10); });
+    log(w0.every(function (v) { return v >= 1 && v <= 97; }), 'Larghezze delle barre entro 1-97%', w0.slice(0, 4).join(',') + ' ...');
+
+    // indicatori
+    log($$('#indTable tbody tr').length >= 10, 'Tabella indicatori popolata', 'righe = ' + $$('#indTable tbody tr').length);
+
+    // watchlist
+    log($$('#watchlist li').length === 14, 'Watchlist con tutti i 14 strumenti', 'voci = ' + $$('#watchlist li').length);
+    log($$('#watchlist .wl-score').length === 14, 'Ogni voce ha un punteggio', 'prima = ' + $('#watchlist .wl-score').textContent.trim());
+
+    // backtest
+    log($$('#btStats .stat').length === 8, 'Otto statistiche di backtest', 'stat = ' + $$('#btStats .stat').length);
+    log(/%/.test($('#btStats').textContent), 'Hit rate calcolato', $('#btStats .stat:nth-child(2) .v').textContent);
+    log(canvasHasContent($('#equity'), doc), 'Curva equity disegnata sul canvas');
+
+    // contesto
+    log($$('#contextList li').length === 6, 'Sei voci di contesto di mercato', 'voci = ' + $$('#contextList li').length);
+
+    // grafico principale
+    log(canvasHasContent($('#chart'), doc), 'Grafico a candele renderizzato (pixel non uniformi)');
+    log($('#chart').width > 400, 'Canvas del grafico dimensionato', $('#chart').width + 'x' + $('#chart').height);
+
+    // journal: stato iniziale
+    log($$('#journalBody tr.empty-row').length === 1 || $$('#journalBody tr[data-id]').length > 0, 'Registro operazioni inizializzato');
+
+    // --- nuovi moduli: confluenza, SMC, sentiment -------------------
+    log($$('#confGrid .conf-item').length === 3, 'Tre riquadri di confluenza (tecnico, SMC, sentiment)',
+      $$('#confGrid .conf-item .val').map(function (e) { return e.textContent; }).join(' | '));
+    log(/\d/.test($('#confGrid .conf-item .val').textContent), 'Punteggi dei modelli mostrati',
+      $('#confGrid .conf-item .val').textContent);
+    log($('#confVerdict .tag-big') && /^(ACQUISTO|VENDITA|NEUTRO)$/.test($('#confVerdict .tag-big').textContent),
+      'Verdetto di confluenza mostrato', $('#confVerdict').textContent.slice(0, 80) + '\u2026');
+
+    log(/\d/.test($('#smcBias').textContent), 'Struttura SMC mostrata', $('#smcBias').textContent);
+    log(/BOS|CHoCH|nessun/.test($('#smcEvent').textContent), 'Ultimo evento di struttura mostrato',
+      $('#smcEvent').textContent.slice(0, 60));
+    log(/%$/.test($('#pdMarker').style.left), 'Indicatore premio/sconto posizionato', $('#pdMarker').style.left);
+    log(parseFloat($('#pdOte').style.width) > 0, 'Zona OTE evidenziata', $('#pdOte').style.width);
+
+    log($$('#obList li').length > 0, 'Elenco order block popolato',
+      $$('#obList li').length + ' righe: ' + ($('#obList li').textContent || '').trim().slice(0, 50));
+    log($$('#fvgList li').length > 0, 'Elenco fair value gap popolato', $$('#fvgList li').length + ' righe');
+    log($$('#liqList li').length > 0, 'Elenco pool di liquidità popolato', $$('#liqList li').length + ' righe');
+    var lastP = parseFloat($('#lastPrice').textContent);
+    var liqParsed = $$('#liqList li').map(function (li) {
+      return {
+        up: /LIQ \u2191/.test(li.textContent),
+        v: parseFloat(li.querySelector('.zr').textContent)
+      };
+    });
+    log(liqParsed.filter(function (x) { return x.up; }).every(function (x) { return x.v >= lastP; }) &&
+      liqParsed.filter(function (x) { return !x.up; }).every(function (x) { return x.v <= lastP; }),
+      'Pool di liquidità coerenti: sopra/sotto il prezzo corrente',
+      'prezzo ' + lastP + ' \u00b7 pool ' + liqParsed.map(function (x) { return (x.up ? 'su ' : 'giu ') + x.v; }).join(', '));
+    log($$('#smcPlan .cell').length === 6, 'Piano operativo SMC con sei celle', $$('#smcPlan .cell').length + ' celle');
+    log(/LONG|SHORT/.test($('#smcPlan').textContent), 'Scenario SMC direzionale',
+      $('#smcPlan .cell .v').textContent);
+    log($$('#smcReasons li').length >= 4, 'Narrazione SMC presente', $$('#smcReasons li').length + ' righe');
+
+    log($$('#strengthList li').length === 10, 'Forza valutata su 10 divise', $$('#strengthList li').length + ' righe');
+    log($$('#strengthList .sbar i').every(function (e) {
+      var w = parseFloat(e.style.width); return w > 0 && w <= 100;
+    }), 'Barre di forza entro 0-100%', $('#strengthList li').textContent.replace(/\s+/g, ' ').trim());
+    log(/%/.test($('#retailLabel').textContent), 'Posizionamento retail mostrato', $('#retailLabel').textContent);
+    log(/%$/.test($('#riskFill').style.left), 'Indicatore di rischio posizionato', $('#riskFill').style.left);
+    log($$('#riskList li').length === 4, 'Quattro indicatori di regime', $$('#riskList li').length + ' righe');
+    log($$('#instList li').length === 4, 'Posizionamento istituzionale mostrato', $$('#instList li').length + ' righe');
+    log(/^(FORTE RIALZO|RIALZO|NEUTRO|RIBASSO|FORTE RIBASSO)$/.test($('#sentBadge .sent-dir').textContent.trim()),
+      'Etichetta di sentiment valida', $('#sentBadge .sent-dir').textContent);
+    log($$('#sentReasons li').length >= 4, 'Narrazione di sentiment presente', $$('#sentReasons li').length + ' righe');
+
+    // --- interazioni -------------------------------------------------
+    w.alert = function () {};
+    w.confirm = function () { return true; };
+
+    // 1. cambio coppia
+    var sel = $('#pairSelect');
+    sel.value = 'GBP/JPY';
+    sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+    log($('#chartTitle').textContent === 'GBP/JPY \u00b7 ' + $('#tfSelect').value,
+      'Cambio coppia dal selettore', $('#chartTitle').textContent);
+    log(parseFloat($('#lastPrice').textContent) > 100, 'Prezzo GBP/JPY plausibile', $('#lastPrice').textContent);
+
+    // 2. cambio timeframe
+    var tf = $('#tfSelect');
+    tf.value = 'D1';
+    tf.dispatchEvent(new w.Event('change', { bubbles: true }));
+    log($('#chartTitle').textContent === 'GBP/JPY \u00b7 D1', 'Cambio timeframe', $('#chartTitle').textContent);
+
+    // 3. attivazione livello Bollinger e previsione
+    var chips = $$('.chart-toggles .chip');
+    chips[1].click(); chips[2].click();
+    log(chips[1].classList.contains('active') && chips[2].classList.contains('active'), 'Livelli grafici attivabili');
+    log(canvasHasContent($('#chart'), doc), 'Grafico ancora renderizzato dopo i livelli extra');
+
+    // 3b. livelli SMC e premio/sconto
+    chips[5].click();
+    log(chips[5].classList.contains('active'), 'Livello premio/sconto attivabile');
+    log(canvasHasContent($('#chart'), doc), 'Grafico renderizzato con premio/sconto');
+    chips[4].click();
+    log(!chips[4].classList.contains('active') && canvasHasContent($('#chart'), doc),
+      'Overlay SMC disattivabile senza rompere il grafico');
+    chips[4].click();
+    log(chips[4].classList.contains('active') && canvasHasContent($('#chart'), doc), 'Overlay SMC riattivato');
+
+    // 3c. lo studio di sentiment segue la coppia selezionata
+    sel.value = 'USD/JPY';
+    sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+    log($('#retailPair').textContent === 'USD/JPY', 'Sentiment aggiornato sulla nuova coppia', $('#retailPair').textContent);
+    log($$('#strengthList li').length === 10, 'Forza delle valute ricalcolata', $$('#strengthList li').length + ' righe');
+    log(/\d/.test($('#smcBias').textContent) && $$('#smcPlan .cell').length === 6,
+      'Analisi SMC ricalcolata sulla nuova coppia', $('#smcBias').textContent);
+    sel.value = 'EUR/USD';
+    sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+
+    // 4. registrazione di un'operazione: cerca un segnale direzionale
+    var pairs = $$('#pairSelect option').map(function (o) { return o.value; });
+    var found = null;
+    for (var i = 0; i < pairs.length && !found; i++) {
+      sel.value = pairs[i];
+      sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+      var d = $('#signalBadge .signal-dir').textContent.trim();
+      if (d === 'ACQUISTO' || d === 'VENDITA') found = { pair: pairs[i], dir: d };
+    }
+    if (!found) {
+      log(false, 'Nessun segnale direzionale trovato per testare il registro');
+    } else {
+      var before = $$('#journalBody tr[data-id]').length;
+      $('#saveTradeBtn').click();
+      var after = $$('#journalBody tr[data-id]').length;
+      log(after === before + 1, 'Registrazione di un trade virtuale', found.pair + ' ' + found.dir + ' (' + before + ' \u2192 ' + after + ')');
+      log($('#journalBody tr[data-id] td:nth-child(9)').textContent.trim() === 'APERTO', 'Stato iniziale APERTO');
+      $('#journalBody tr[data-id] button.ok').click();
+      log($('#journalBody tr[data-id] td:nth-child(9)').textContent.trim() === 'VINTO', 'Chiusura manuale in profitto');
+      log(/hit rate 100%/.test($('#journalSummary').textContent), 'Riepilogo del registro aggiornato', $('#journalSummary').textContent.trim());
+      $('#journalBody tr[data-id] button.rm').click();
+      $('#clearJournal').click();
+      log($$('#journalBody tr[data-id]').length === 0, 'Registro svuotato');
+    }
+
+    // 5. tasto Aggiorna
+    var scoreBefore = $('#signalBadge .signal-conf').textContent;
+    var saltBefore = $('#planEntry').textContent;
+    $('#refreshBtn').click();
+    log(typeof $('#planEntry').textContent === 'string', 'Tasto Aggiorna eseguito senza errori',
+      'prezzo ' + saltBefore + ' \u2192 ' + $('#planEntry').textContent);
+
+    // 6. reattività: ridimensionamento della finestra
+    w.dispatchEvent(new w.Event('resize'));
+    log(canvasHasContent($('#chart'), doc), 'Grafico ridisegnato dopo un resize');
+
+    // 7. report in linguaggio semplice
+    log(!!$('#reportBtn') && !!$('#confReportBtn'), 'Pulsanti di apertura del report presenti');
+    log($('#reportOverlay').classList.contains('hidden'), 'Finestra del report chiusa all\u2019avvio');
+    $('#reportBtn').click();
+    log(!$('#reportOverlay').classList.contains('hidden'), 'Il report si apre con il pulsante della barra');
+    var repSections = $$('#reportBody .rep-h2');
+    log(repSections.length >= 6, 'Il report contiene tutte le sezioni', repSections.length + ' sezioni');
+    log($$('#reportBody .rep-callout').length >= 3, 'Riquadri di sintesi presenti',
+      $$('#reportBody .rep-callout').length + ' riquadri');
+    log($$('#reportBody .rep-table').length >= 2, 'Tabelle esplicative presenti',
+      $$('#reportBody .rep-table').length + ' tabelle');
+    log($$('#reportBody .rep-glossary dt').length >= 20, 'Glossario presente nel report',
+      $$('#reportBody .rep-glossary dt').length + ' termini spiegati');
+    var repText = $('#reportBody').textContent;
+    log(repText.length > 4000, 'Report dettagliato', repText.length + ' caratteri');
+    log(repText.indexOf('\u2014') === -1, 'Nessun carattere sostitutivo nel testo');
+    log(/spiegat[oi] in una riga|ordine alfabetico/.test(repText), 'Il glossario e\u0300 presentato con una spiegazione',
+      'testo di introduzione al glossario presente');
+    var pairNow = $('#pairSelect').value;
+    log($('#reportSubtitle').textContent.indexOf(pairNow) >= 0 &&
+      $('#reportSubtitle').textContent.indexOf('orizzonte') >= 0,
+      'Sottotitolo con coppia e orizzonte', $('#reportSubtitle').textContent);
+    log(!!$('#reportCopy') && !!$('#reportDownload') && !!$('#reportPrint'), 'Azioni di copia, download e stampa presenti');
+    $('#reportCopy').click();
+    log(true, 'Copia eseguita senza errori');
+    $('#reportClose').click();
+    log($('#reportOverlay').classList.contains('hidden'), 'Il report si chiude con il pulsante Chiudi');
+    $('#confReportBtn').click();
+    log(!$('#reportOverlay').classList.contains('hidden'), 'Il report si apre anche dal riquadro di confluenza');
+    $('#reportOverlay').click();
+    log($('#reportOverlay').classList.contains('hidden'), 'Il report si chiude cliccando lo sfondo');
+    // il report segue la coppia selezionata
+    sel.value = 'GBP/JPY';
+    sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+    $('#reportBtn').click();
+    log($('#reportSubtitle').textContent.indexOf('GBP/JPY') >= 0 && $$('#reportBody .rep-h2').length >= 6,
+      'Il report si rigenera sulla nuova coppia', $('#reportSubtitle').textContent);
+    log($('#reportBody').textContent.indexOf('GBP/JPY') >= 0, 'Il testo del report cita la coppia scelta');
+    $('#reportClose').click();
+    sel.value = 'EUR/USD';
+    sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+
+    // 7. nessun errore JS
+    var errs = (w.__errors || []);
+    log(errs.length === 0, 'Nessun errore JavaScript durante tutto il test', errs.join(' ; '));
+
+    // 8. dati reali dal ponte locale (se il server e\u0300 attivo)
+    function getJsonSync(url) {
+      var r = new XMLHttpRequest();
+      r.open('GET', url, false);
+      try { r.send(); } catch (e) { return null; }
+      if (r.status !== 200) return null;
+      try { return JSON.parse(r.responseText); } catch (e) { return null; }
+    }
+    var st = getJsonSync('/api/status');
+    if (!st) {
+      info('SKIP  ponte dati non raggiungibile da questo contesto: controlli sui dati reali saltati');
+    } else {
+      log(st.ok && st.provider === 'Yahoo Finance', 'Il ponte risponde e dichiara il fornitore', st.provider);
+      log((st.enabledSymbols || []).indexOf('EUR/USD') >= 0, 'EUR/USD e\u0300 la coppia collegata ai dati reali');
+
+      var d = getJsonSync('/api/candles?tf=M10&symbol=EUR%2FUSD');
+      log(!!d && d.ok === true, 'Scaricamento delle candele reali M10',
+        (d && d.ok) ? (d.bars + ' candele \u00b7 ' + String(d.history || '').split(';')[0]) : 'fallito');
+      if (d && d.ok) {
+        log(d.symbol === 'EUR/USD' && d.source === 'yahoo-finance', 'Il payload dichiara coppia e fonte');
+        var cs = d.candles, mono = true, step = -1;
+        for (var k = 1; k < cs.length; k++) {
+          if (cs[k].time <= cs[k - 1].time) mono = false;
+        }
+        if (cs.length > 1) step = (cs[1].time - cs[0].time) / 60000;
+        log(mono, 'Candele reali in ordine cronologico');
+        log(step === 10, 'La candela a 10 minuti ha il passo giusto', step + ' minuti');
+        log(cs.length >= 200, 'Serie sufficiente per l\u2019analisi', cs.length + ' candele');
+        var lastC = cs[cs.length - 1];
+        log(lastC.close > 0 && lastC.high >= Math.max(lastC.open, lastC.close) &&
+            lastC.low <= Math.min(lastC.open, lastC.close),
+          'OHLC dell\u2019ultima candela coerente', lastC.close);
+        log(d.aggregated === true, 'La serie M10 dichiara la ricostruzione dai 5 minuti');
+
+        var second = getJsonSync('/api/candles?tf=M10&symbol=EUR%2FUSD');
+        log(!!second && second.fromCache === true, 'La seconda chiamata e\u0300 servita dalla cache del ponte');
+      }
+
+      var d1 = getJsonSync('/api/candles?tf=D1&symbol=EUR%2FUSD');
+      log(!!d1 && d1.ok === true && d1.bars >= 1200, 'Giornaliero con 5 anni di storia',
+        (d1 && d1.ok) ? (d1.bars + ' candele') : 'fallito');
+      if (d1 && d1.ok) {
+        var spanYears = (d1.candles[d1.candles.length - 1].time - d1.candles[0].time) / (365.25 * 24 * 3600 * 1000);
+        log(spanYears >= 4.5, 'La storia giornaliera copre circa 5 anni', spanYears.toFixed(1) + ' anni');
+        log((st.timeframes && st.timeframes.D1 && st.timeframes.D1.history) === '5 anni',
+          'Il ponte dichiara la profondita\u0300 del giornaliero');
+      }
+    }
+
+    info('');
+    info('Dettagli finali: coppia ' + $('#chartTitle').textContent + ', ultimo prezzo ' + $('#lastPrice').textContent +
+      ', segnale ' + $('#signalBadge .signal-dir').textContent.trim() +
+      ', confidenza ' + $('#signalBadge .signal-conf').textContent.trim());
+    info('Backtest: ' + $$('#btStats .stat').map(function (s) {
+      return s.querySelector('.k').textContent + '=' + s.querySelector('.v').textContent;
+    }).join(' | '));
+
+    report();
+  }
+})();
+</script>
+</body>
+</html>

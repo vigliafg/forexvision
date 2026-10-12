@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<title>ForexVision - test dati reali</title>
+<style>
+  body{background:#0b1017;color:#e6edf7;font:13px/1.5 "JetBrains Mono",monospace;margin:0}
+  #log{padding:14px}
+  .pass{color:#18c98a}.fail{color:#f2555a}.info{color:#8fa3bf}.skip{color:#f0b429}
+  #summary{font-size:18px;font-weight:700;padding:8px 12px;border:1px solid #22304a;border-radius:8px;background:#141d2b;display:inline-block;margin:12px 14px}
+  iframe{width:1400px;height:2000px;border:0;position:absolute;left:-10000px;top:0}
+</style>
+</head>
+<body>
+<div id="summary">in esecuzione...</div>
+<div id="log"></div>
+<iframe id="app" src="../index.html"></iframe>
+<script>
+(function () {
+  var out = document.getElementById('log');
+  var lines = [], pass = 0, fail = 0, skipped = 0;
+
+  function log(ok, label, extra) {
+    ok ? pass++ : fail++;
+    var p = document.createElement('pre');
+    p.className = ok ? 'pass' : 'fail';
+    p.textContent = (ok ? 'PASS  ' : 'FAIL  ') + label + (extra ? '   |  ' + extra : '');
+    out.appendChild(p);
+    lines.push(p.textContent);
+  }
+  function info(t) {
+    var p = document.createElement('pre');
+    p.className = 'info';
+    p.textContent = t;
+    out.appendChild(p);
+    lines.push(t);
+  }
+  function $(sel, root) { return (root || frame.contentDocument).querySelector(sel); }
+  function $$(sel, root) { return Array.prototype.slice.call((root || frame.contentDocument).querySelectorAll(sel)); }
+
+  var frame = document.getElementById('app');
+
+  function waitFor(cond, ms, step) {
+    return new Promise(function (resolve) {
+      var t0 = Date.now();
+      var timer = setInterval(function () {
+        var ok = false;
+        try { ok = cond(); } catch (e) { ok = false; }
+        if (ok || Date.now() - t0 > (ms || 12000)) { clearInterval(timer); resolve(ok); }
+      }, step || 120);
+    });
+  }
+
+  function report() {
+    var sum = document.getElementById('summary');
+    sum.textContent = (fail === 0 ? 'LIVE TEST SUPERATO: ' : 'LIVE TEST FALLITO: ') + pass + '/' + (pass + fail) + ' test';
+    sum.className = fail === 0 ? 'pass' : 'fail';
+    lines.push('');
+    lines.push('SUMMARY: ' + sum.textContent + (skipped ? ' (saltati: ' + skipped + ')' : ''));
+    try {
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', '/report', false);
+      xhr.setRequestHeader('Content-Type', 'text/plain');
+      xhr.send(lines.join('\n'));
+    } catch (e) {}
+  }
+
+  frame.addEventListener('load', function () {
+    setTimeout(runChecks, 800);
+  });
+
+  function runChecks() {
+    var w = frame.contentWindow, doc = frame.contentDocument;
+
+    // Il bridge deve essere raggiungibile: senza server niente test end-to-end.
+    waitFor(function () { return /\bDATI REALI\b/.test($('#feedBadge').textContent); }, 40000, 250).then(function (ok) {
+      if (!ok) {
+        log(!!$('#feedBadge') && /SIMULATI/.test($('#feedBadge').textContent), 'Il badge dichiara la modalità corrente',
+          $('#feedBadge').textContent);
+        log(/non raggiungibile/.test($('#feedInfo').textContent), 'La pagina spiega perché è offline',
+          $('#feedInfo').textContent);
+        info('SKIP  server dei dati reali non disponibile: resto della suite saltato');
+        skipped = 50;
+        report();
+        return;
+      }
+
+      runLiveChecks(w, doc).then(function () { report(); });
+    });
+  }
+
+  function runLiveChecks(w, doc) {
+    // --- badge e intestazione --------------------------------------------
+    log($('#feedBadge').textContent.indexOf('DATI REALI') === 0, 'Badge in modalità dati reali',
+      $('#feedBadge').textContent);
+    log(/ultimo aggiornamento/.test($('#feedInfo').textContent), 'Info sul flusso con l\u2019ora dell\u2019ultimo aggiornamento',
+      $('#feedInfo').textContent);
+    log($('#tfSelect').value === 'M10', 'Il 10 minuti è il timeframe predefinito', $('#tfSelect').value);
+
+    var lp = parseFloat($('#lastPrice').textContent);
+    log(lp > 0 && lp < 3, 'Prezzo EUR/USD reale plausibile', $('#lastPrice').textContent);
+    log(/^\d{2}:\d{2}/.test($('#feedInfo').textContent) || /ultimo aggiornamento/.test($('#feedInfo').textContent),
+      'L\u2019ora di aggiornamento è nel formato atteso', $('#feedInfo').textContent);
+
+    // l'ultima candela del feed è coerente con l'analisi mostrata
+    var en = parseFloat($('#planEntry').textContent), tp = parseFloat($('#planTp').textContent), sl = parseFloat($('#planSl').textContent);
+    log(isFinite(en) && en > 0, 'Piano operativo valorizzato sul prezzo reale', 'entry ' + en);
+    log(tp !== en && sl !== en && (tp - en) * (sl - en) < 0, 'TP e SL ai lati opposti dell\u2019ingresso');
+
+    var atr = parseFloat($('#planAtr').textContent.replace(',', '.'));
+    log(isFinite(atr) && atr > 0, 'ATR positivo (dati reali)', atr);
+
+    // --- confluenza ridotta: il sentiment ha un solo cambio reale ----------
+    log($$('#confGrid .conf-item').length === 2,
+      'Il verdetto combina solo i modelli con un universo completo (2 riquadri)',
+      $$('#confGrid .conf-item .name').map(function (e) { return e.textContent; }).join(' + '));
+    log(/^(ACQUISTO|VENDITA|NEUTRO)$/.test($('#confVerdict .tag-big').textContent),
+      'Verdetto di confluenza presente', $('#confVerdict').textContent.slice(0, 60) + '\u2026');
+
+    // --- sentiment onesto: universo ridotto dichiarato ---------------------
+    log(/Dati reali solo per EUR\/USD/.test($('#sentScope').textContent),
+      'La scheda sentiment spiega l\u2019universo ridotto', $('#sentScope').textContent.slice(0, 70) + '\u2026');
+    log($('#simCtxRow').style.display !== 'none', 'L\u2019opzione del contesto simulato è visibile');
+    log($$('#strengthList li').length === 10, 'La forza è comunque mostrata su tutte le valute');
+
+    // --- report: sezione "fonte dei dati" ----------------------------------
+    $('#reportBtn').click();
+    return waitFor(function () { return $('#reportBody').textContent.indexOf('La fonte dei dati') >= 0; }, 8000).then(function (ok) {
+      log(!$('#reportOverlay').classList.contains('hidden'), 'Il report si apre');
+      log(ok, 'Il report include la sezione \u201cLa fonte dei dati\u201d');
+      log($('#reportBody').textContent.indexOf('Yahoo Finance') >= 0, 'Il report cita Yahoo Finance');
+      log(/\bM10|10 minuti\b/.test($('#reportBody').textContent), 'Il report cita il timeframe a 10 minuti');
+
+      // --- passaggio a una coppia non collegata ------------------------------
+      $('#reportClose').click();
+      var sel = $('#pairSelect');
+      sel.value = 'GBP/JPY';
+      sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+      return waitFor(function () { return /\bDATI SIMULATI\b/.test($('#feedBadge').textContent); }, 12000).then(function (switched) {
+        log(switched, 'Sulle altre coppie l\u2019app torna onesta: badge simulato', $('#feedBadge').textContent);
+        log(/solo la coppia EUR\/USD/.test($('#feedInfo').textContent),
+          'La nota spiega perché la coppia è simulata', $('#feedInfo').textContent);
+
+        // --- torna su EUR/USD in modalità reale -------------------------------
+        sel.value = 'EUR/USD';
+        sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+        return waitFor(function () { return /\bDATI REALI\b/.test($('#feedBadge').textContent); }, 12000).then(function (back) {
+          log(back, 'Torna ai dati reali selezionando EUR/USD');
+
+          // --- giornaliero: 5 anni di storia dichiarati nell'interfaccia ------
+          var tf = $('#tfSelect');
+          tf.value = 'D1';
+          tf.dispatchEvent(new w.Event('change', { bubbles: true }));
+          return waitFor(function () {
+            return $('#chartTitle').textContent === 'EUR/USD \u00b7 D1' &&
+              /5 anni/.test($('#feedInfo').title || '');
+          }, 40000, 250).then(function (d1ok) {
+            log(d1ok, 'Sul giornaliero l\u2019interfaccia dichiara i 5 anni di storia',
+              $('#feedInfo').title || '(titolo ancora vuoto)');
+            log($$('#lastPrice').length === 1, 'Analisi giornaliera reale attiva', $('#chartTitle').textContent);
+
+            var errs = (w.__errors || []);
+            log(errs.length === 0, 'Nessun errore JavaScript durante il test dei dati reali', errs.join(' ; '));
+            return Promise.resolve();
+          });
+        });
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ForexVision &mdash; Analisi Previsionale Forex</title>
+<link rel="stylesheet" href="css/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128200;</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">&#128200;</span>
+    <div>
+      <h1>ForexVision</h1>
+      <p class="tagline">Motore previsionale multi-indicatore</p>
+    </div>
+  </div>
+
+  <div class="controls">
+    <label class="field">
+      <span>Coppia</span>
+      <select id="pairSelect"></select>
+    </label>
+
+    <label class="field">
+      <span>Timeframe</span>
+      <select id="tfSelect">
+        <option value="M5">M5 &middot; 5 min</option>
+        <option value="M10" selected>M10 &middot; 10 min</option>
+        <option value="M15">M15 &middot; 15 min</option>
+        <option value="H1">H1 &middot; 1 ora</option>
+        <option value="H4">H4 &middot; 4 ore</option>
+        <option value="D1">D1 &middot; Giornaliero</option>
+      </select>
+    </label>
+
+    <label class="field">
+      <span>Orizzonte</span>
+      <select id="horizonSelect">
+        <option value="5">5 candele</option>
+        <option value="10" selected>10 candele</option>
+        <option value="20">20 candele</option>
+        <option value="40">40 candele</option>
+      </select>
+    </label>
+
+    <button id="refreshBtn" class="btn btn-primary" title="Rigenera il flusso dati">&#8635; Aggiorna</button>
+    <button id="reportBtn" class="btn btn-report" title="Report completo in linguaggio semplice">&#128196; Report</button>
+    <span id="feedBadge" class="badge badge-sim">DATI SIMULATI</span>
+    <span id="feedInfo" class="feed-info dim" title=""></span>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- ============ COLONNA CENTRALE ============ -->
+  <section class="col-main">
+
+    <div class="card chart-card">
+      <div class="card-head">
+        <div class="price-head">
+          <h2 id="chartTitle">EUR/USD</h2>
+          <span id="lastPrice" class="last-price">&mdash;</span>
+          <span id="lastChange" class="delta">&mdash;</span>
+        </div>
+        <div class="chart-toggles">
+          <button class="chip active" data-layer="ma">Medie</button>
+          <button class="chip" data-layer="bb">Bollinger</button>
+          <button class="chip" data-layer="forecast">Previsione</button>
+          <button class="chip active" data-layer="volume">Volumi</button>
+          <button class="chip active" data-layer="smc">SMC</button>
+          <button class="chip" data-layer="pd">Premio/Sconto</button>
+        </div>
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="chart"></canvas>
+        <div id="tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="chart-foot">
+        <span id="ohlcReadout" class="mono dim">&mdash;</span>
+        <span class="dim">Ora di sistema: <b id="clock" class="mono"></b></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Segnale operativo</h2>
+        <span class="dim" id="signalStamp"></span>
+      </div>
+      <div class="signal-grid">
+        <div class="signal-main">
+          <div id="signalBadge" class="signal-badge neutral">
+            <span class="signal-dir">NEUTRO</span>
+            <span class="signal-conf">confidenza &mdash;</span>
+          </div>
+          <div class="gauge">
+            <div class="gauge-bar"><div id="gaugeFill" class="gauge-fill"></div></div>
+            <div class="gauge-scale">
+              <span>Vendita forte</span><span>Neutro</span><span>Acquisto forte</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="plan">
+          <div class="plan-row"><span>Prezzo attuale</span><b id="planEntry" class="mono">&mdash;</b></div>
+          <div class="plan-row"><span>Obiettivo (TP)</span><b id="planTp" class="mono pos">&mdash;</b></div>
+          <div class="plan-row"><span>Stop loss</span><b id="planSl" class="mono neg">&mdash;</b></div>
+          <div class="plan-row"><span>Rapporto R:R</span><b id="planRr" class="mono">&mdash;</b></div>
+          <div class="plan-row"><span>Movimento atteso</span><b id="planExp" class="mono">&mdash;</b></div>
+          <div class="plan-row"><span>Volatilit&agrave; (ATR)</span><b id="planAtr" class="mono">&mdash;</b></div>
+          <button id="saveTradeBtn" class="btn btn-ghost full">&#43; Registra trade virtuale</button>
+        </div>
+      </div>
+      <ul id="reasonList" class="reasons"></ul>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Confluenza dei modelli</h2>
+        <span class="dim" id="confStamp">tecnico &middot; SMC &middot; sentiment</span>
+      </div>
+      <div class="conf-grid" id="confGrid"></div>
+      <div id="confVerdict" class="conf-verdict"></div>
+      <div class="conf-cta">
+        <button id="confReportBtn" class="btn btn-ghost">&#128196; Leggi il report completo in linguaggio semplice</button>
+        <span class="dim">spiega il quadro attuale, le previsioni dei tre studi e il significato di ogni termine</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>SMC &mdash; Smart Money Concepts</h2>
+        <span class="dim" id="smcStamp"></span>
+      </div>
+
+      <div class="smc-top">
+        <div class="smc-structure">
+          <div class="k">Struttura</div>
+          <div class="v" id="smcBias">&mdash;</div>
+          <div class="sub dim" id="smcEvent">&mdash;</div>
+        </div>
+        <div class="smc-range">
+          <div class="k">Range di riferimento</div>
+          <div class="pd-bar" id="pdBar">
+            <span class="pd-zone discount">Sconto</span>
+            <span class="pd-zone premium">Premio</span>
+            <span class="pd-marker" id="pdMarker"></span>
+            <span class="pd-ote" id="pdOte"></span>
+          </div>
+          <div class="sub dim" id="pdText">&mdash;</div>
+        </div>
+      </div>
+
+      <div class="smc-cols">
+        <div>
+          <h3 class="mini-title">Order block</h3>
+          <ul class="zone-list" id="obList"></ul>
+        </div>
+        <div>
+          <h3 class="mini-title">Fair value gap</h3>
+          <ul class="zone-list" id="fvgList"></ul>
+        </div>
+        <div>
+          <h3 class="mini-title">Liquidit&agrave;</h3>
+          <ul class="zone-list" id="liqList"></ul>
+        </div>
+      </div>
+
+      <div class="smc-plan" id="smcPlan"></div>
+      <ul id="smcReasons" class="reasons"></ul>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Proiezione probabilistica</h2>
+        <span class="dim" id="fcHorizonLabel"></span>
+      </div>
+      <div class="fc-summary" id="fcSummary"></div>
+      <div class="fc-levels" id="fcLevels"></div>
+    </div>
+
+  </section>
+
+  <!-- ============ COLONNA LATERALE ============ -->
+  <aside class="col-side">
+
+    <div class="card">
+      <div class="card-head"><h2>Indicatori tecnici</h2></div>
+      <table class="ind-table" id="indTable">
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Sentiment di mercato</h2>
+        <span class="dim" id="sentStamp"></span>
+      </div>
+
+      <div class="sent-badge" id="sentBadge">
+        <span class="sent-dir">&mdash;</span>
+        <span class="sent-conf">forza relativa &mdash;</span>
+      </div>
+
+      <p class="note small sent-scope" id="sentScope" style="display:none"></p>
+      <label class="note small sent-scope" id="simCtxRow" style="display:none">
+        <input type="checkbox" id="simCtx"> includi nel sentiment anche il contesto simulato (14 strumenti)
+      </label>
+
+      <h3 class="mini-title">Forza delle valute <span class="dim" id="strengthTf"></span></h3>
+      <ul class="strength-list" id="strengthList"></ul>
+
+      <h3 class="mini-title">Posizionamento retail<span class="dim" id="retailPair"></span></h3>
+      <div class="retail-bar" id="retailBar">
+        <span class="retail-long" id="retailLong"></span>
+        <span class="retail-short" id="retailShort"></span>
+        <span class="retail-label" id="retailLabel"></span>
+      </div>
+      <p class="note small" id="retailNote"></p>
+
+      <h3 class="mini-title">Regime di mercato</h3>
+      <div class="risk-row">
+        <div class="gauge-mini">
+          <div class="gauge-bar"><div class="gauge-fill" id="riskFill"></div></div>
+          <div class="gauge-scale"><span>Risk-off</span><span>Neutro</span><span>Risk-on</span></div>
+        </div>
+      </div>
+      <ul class="kpi-list" id="riskList"></ul>
+
+      <h3 class="mini-title">Posizionamento istituzionale <span class="dim">(COT-style, simulato)</span></h3>
+      <ul class="inst-list" id="instList"></ul>
+
+      <ul id="sentReasons" class="reasons compact"></ul>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Watchlist</h2><span class="dim">segnale sintetico</span></div>
+      <ul class="watchlist" id="watchlist"></ul>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Backtest storico</h2><span class="dim">ultime 250 candele</span></div>
+      <div class="stats" id="btStats"></div>
+      <canvas id="equity" class="equity-canvas"></canvas>
+      <p class="note">Risultati misurati su serie <b>simulate</b>. Il generatore contiene regimi di
+        tendenza persistenti, quindi il modello appare pi&ugrave; efficace di quanto sarebbe su prezzi reali,
+        dove un hit rate vicino al 50% &egrave; la norma. Nessun valore qui riportato &egrave; una promessa di rendimento.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Contesto di mercato</h2></div>
+      <ul class="context" id="contextList"></ul>
+    </div>
+
+  </aside>
+</main>
+
+<section class="card journal">
+  <div class="card-head">
+    <h2>Registro operazioni virtuali</h2>
+    <div>
+      <span id="journalSummary" class="dim"></span>
+      <button id="clearJournal" class="btn btn-ghost">Svuota</button>
+    </div>
+  </div>
+  <div class="table-scroll">
+    <table class="journal-table">
+      <thead>
+        <tr>
+          <th>Ora</th><th>Coppia</th><th>TF</th><th>Dir.</th>
+          <th>Ingresso</th><th>TP</th><th>SL</th><th>Conf.</th><th>Esito</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="journalBody"></tbody>
+    </table>
+  </div>
+</section>
+
+<footer class="foot">
+  <p><b>Avvertenza:</b> strumento didattico. Le previsioni derivano da modelli statistici su serie
+  simulate e non costituiscono consulenza finanziaria n&eacute; raccomandazione di investimento.
+  Il trading sul forex comporta un elevato rischio di perdita del capitale.</p>
+</footer>
+
+<!-- ===================== FINESTRA DEL REPORT ===================== -->
+<div id="reportOverlay" class="report-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="reportTitle">
+  <div class="report-sheet" id="reportSheet">
+    <header class="report-head">
+      <div>
+        <h2 id="reportTitle">Report di mercato</h2>
+        <p class="dim" id="reportSubtitle">&mdash;</p>
+      </div>
+      <div class="report-actions">
+        <button id="reportCopy" class="btn btn-ghost" title="Copia il report negli appunti">&#128203; Copia</button>
+        <button id="reportDownload" class="btn btn-ghost" title="Scarica il report come file di testo">&#11015; Scarica .txt</button>
+        <button id="reportPrint" class="btn btn-ghost" title="Stampa o salva in PDF">&#128424; Stampa</button>
+        <button id="reportClose" class="btn btn-primary">Chiudi</button>
+      </div>
+    </header>
+    <div class="report-body" id="reportBody"></div>
+  </div>
+</div>
+
+<script>
+  // Raccoglitore diagnostico: gli errori non gestiti finiscono in window.__errors,
+  // utile per il debug e per i test automatici (tests/selfcheck.html, tests/smoke.html).
+  window.__errors = [];
+  window.addEventListener('error', function (e) {
+    window.__errors.push((e.message || 'errore') + ' @ ' + (e.filename || '?') + ':' + (e.lineno || 0));
+  });
+</script>
+<script src="js/data.js"></script>
+<script src="js/indicators.js"></script>
+<script src="js/forecast.js"></script>
+<script src="js/smc.js"></script>
+<script src="js/sentiment.js"></script>
+<script src="js/report.js"></script>
+<script src="js/feed.js"></script>
+<script src="js/chart.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
