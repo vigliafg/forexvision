@@ -276,7 +276,7 @@
       $$('#indBlock .gauge-tile').length + ' tile');
     $$('#tabbar .tab').filter(function (t) { return t.dataset.panel === 'tab-smc'; })[0].click();
     log($('#tab-smc').classList.contains('active') && $$('#liqMap .liq-row').length > 0 &&
-      $$('#smcLadder .step').length >= 4 && $$('#structTimeline .ev').length > 0,
+      $$('#smcLadder .h-lab').length >= 4 && $$('#structTimeline .ev').length > 0,
       'Il cambio tab mostra il pannello SMC completo',
       $$('#liqMap .liq-row').length + ' livelli \u00b7 ' + $$('#structTimeline .ev').length + ' eventi in finestra');
     log(canvasHasContent($('#chart'), doc), 'Il grafico resta disegnato in tab nascosta');

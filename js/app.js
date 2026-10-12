@@ -1287,7 +1287,7 @@
       Ui.ladder($('smcLadder'), ladderItems, {
         risk: [s.price, p.stop],
         gain: [s.price, p.tp2]
-      });
+      }, 'h');   // come nel cruscotto: scala orizzontale
       Ui.timeline($('structTimeline'), s.structure.events, s.lastIndex, 50);
     }
 
