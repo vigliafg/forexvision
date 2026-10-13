@@ -36,6 +36,10 @@
     { term: 'Media mobile (EMA)', text: 'La media dei prezzi delle ultime candele. Se il prezzo sta sopra, in media chi compra ha il controllo; se sta sotto, ha il controllo chi vende.' },
     { term: 'Bande di Bollinger', text: 'Una fascia disegnata attorno al prezzo: si allarga quando il mercato si agita e si stringe quando è calmo. Serve a capire se il prezzo è "stirato".' },
     { term: 'Stochastic', text: 'Come l\'RSI, misura se il prezzo è vicino ai massimi o ai minimi delle ultime candele.' },
+    { term: 'SuperTrend', text: 'Indicatore che segue la tendenza e si sposta solo nella sua direzione: sta sotto il prezzo quando il mercato sale, sopra quando scende. Funziona da stop mobile.' },
+    { term: 'Ichimoku', text: 'Un metodo giapponese che disegna una fascia colorata (la "nuvola") davanti al prezzo. Sopra la nuvola la tendenza è rialzista, sotto è ribassista, dentro il mercato è indeciso.' },
+    { term: 'Divergenza', text: 'Quando il prezzo segna un nuovo massimo (o minimo) ma l\'indicatore no: il movimento sta perdendo forza. È regolare se anticipa un\'inversione, nascosta se indica solo una pausa.' },
+    { term: 'Pivot point', text: 'Livelli di riferimento calcolati con il massimo, il minimo e la chiusura del periodo di contrattazione precedente. Servono a sapere in anticipo dove il prezzo può fermarsi.' },
     { term: 'Struttura di mercato', text: 'La sequenza di massimi e minimi che il prezzo disegna. Serve a capire la direzione di fondo, al di là del rumore quotidiano.' },
     { term: 'BOS', text: 'Break of Structure, rottura della struttura. Si ha quando il prezzo supera il massimo (o il minimo) precedente più importante: conferma che la direzione sta proseguendo.' },
     { term: 'CHoCH', text: 'Change of Character, cambio di carattere. È la prima rottura nella direzione opposta: segnala che il mercato sta forse cambiando passo.' },
@@ -72,7 +76,8 @@
     'OTE', 'sentiment', 'risk-on', 'risk-off', 'stop loss', 'obiettivo',
     'rischio/rendimento', 'confluenza', 'volatilità', 'pip', 'candela',
     'orizzonte', 'backtest', 'hit rate', 'drawdown', 'struttura',
-    'COT', 'VIX', 'dollaro'
+    'COT', 'VIX', 'dollaro',
+    'SuperTrend', 'Ichimoku', 'divergenza', 'pivot'
   ];
 
   /* ------------------------------------------------------------------ */
@@ -192,6 +197,53 @@
     rows.push(['ATR (14)',
       'L\'ampiezza media di una candela: serve a scegliere uno stop adeguato.',
       px(a.atr) + ' (' + a.atrPct.toFixed(2) + '% del prezzo)']);
+
+    // SuperTrend: tendenza di fondo e stop mobile
+    if (ind.superTrend && ind.superTrend.line[i] != null) {
+      const stDir = ind.superTrend.dir[i];
+      rows.push(['SuperTrend (ATR 10 × 3)',
+        'Segue la tendenza e si sposta solo nella sua direzione: vale come stop mobile.',
+        px(ind.superTrend.line[i]) + '  ' + (stDir === 1
+          ? '(linea sotto il prezzo: tendenza di fondo rialzista)'
+          : '(linea sopra il prezzo: tendenza di fondo ribassista)')]);
+    }
+
+    // Ichimoku: posizione del prezzo rispetto alla nuvola
+    if (ind.ichimoku && ind.ichimoku.spanA[i] != null && ind.ichimoku.spanB[i] != null) {
+      const icTop = Math.max(ind.ichimoku.spanA[i], ind.ichimoku.spanB[i]);
+      const icBot = Math.min(ind.ichimoku.spanA[i], ind.ichimoku.spanB[i]);
+      const icDove = last.close > icTop ? 'sopra la nuvola, quindi tendenza rialzista'
+        : last.close < icBot ? 'sotto la nuvola, quindi tendenza ribassista'
+          : 'dentro la nuvola, quindi mercato indeciso';
+      rows.push(['Ichimoku (9/26/52)',
+        'Disegna una fascia davanti al prezzo e due linee di equilibrio.',
+        'nuvola ' + num(icBot, digits) + ' - ' + num(icTop, digits) + '  (prezzo ' + icDove + ')']);
+    }
+
+    // divergenze fra prezzo e oscillatori
+    if (ctx.divergence) {
+      const dv = ctx.divergence;
+      const dvTxt = dv.items.length
+        ? dv.items.map(function (it) {
+          return (it.dir > 0 ? 'rialzista' : 'ribassista') +
+            (it.kind === 'hidden' ? ' nascosta' : ' regolare') + ' su ' + it.osc;
+        }).join(', ')
+        : 'nessuna rilevata';
+      rows.push(['Divergenza (RSI e MACD)',
+        'Confrontano i massimi e i minimi del prezzo con gli oscillatori: dicono se il movimento sta perdendo forza.',
+        dvTxt + (dv.items.length ? '  (' + dv.items[0].age + ' barre fa la piu\' recente)' : '')]);
+    }
+
+    // pivot point del periodo precedente
+    if (ctx.pivots) {
+      const pv = ctx.pivots;
+      const pvSopra = last.close >= pv.classic.p;
+      rows.push(['Pivot point (' + pv.period + ')',
+        'Livelli di riferimento calcolati sul periodo di contrattazione precedente.',
+        'centrale ' + num(pv.classic.p, digits) + ', primo sostegno ' + num(pv.classic.s1, digits) +
+        ', prima resistenza ' + num(pv.classic.r1, digits) +
+        '  (prezzo ' + (pvSopra ? 'sopra' : 'sotto') + ' il livello centrale)']);
+    }
     push({ type: 'table', head: ['Indicatore', 'Che cosa misura', 'Valore e lettura'], rows: rows });
 
     const label = a.direction === 'BUY' ? 'ACQUISTO' : a.direction === 'SELL' ? 'VENDITA' : 'NEUTRO';
@@ -222,6 +274,18 @@
         px(a.stop) + ' (' + sign(pipOf(a.stop - a.price), 1) + ' pip). Il rapporto rischio/rendimento è ' +
         a.rr.toFixed(2) + ' a 1: si rischia 1 per provare a guadagnare ' + a.rr.toFixed(2) + '.'
     });
+    if (ind.superTrend && ind.superTrend.line[i] != null) {
+      const stAllineato = (a.direction === 'BUY' && ind.superTrend.dir[i] === 1) ||
+        (a.direction === 'SELL' && ind.superTrend.dir[i] === -1);
+      push({
+        type: 'p',
+        text: 'Lo stop mobile del SuperTrend vale adesso ' + px(ind.superTrend.line[i]) +
+          ' (' + sign(pipOf(ind.superTrend.line[i] - a.price), 1) + ' pip dal prezzo) ed è ' +
+          (stAllineato ? 'dalla stessa parte dell\'operazione ipotizzata'
+            : 'dalla parte opposta: la tendenza di fondo non conferma lo scenario') +
+          '. Chi usa uno stop che insegue il prezzo può aggiornarlo a questo livello.'
+      });
+    }
     push({
       type: 'p',
       text: 'L\'analisi tecnica cambierebbe idea se il prezzo ' + (a.direction === 'SELL' ? 'risalisse oltre ' + px(a.stop) : 'scendesse sotto ' + px(a.stop)) +

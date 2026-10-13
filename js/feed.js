@@ -26,7 +26,9 @@
   const POLL_MS = 60 * 1000;
   const PROBE_TIMEOUT = 4000;
   const LOAD_TIMEOUT = 25000;
-  const DEFAULT_PORT = 8901;
+  // Stessa porta dei lanciatori (avvia.sh / avvia.bat): vale quando la pagina
+  // viene aperta direttamente da file:// e il ponte va cercato.
+  const DEFAULT_PORT = 8199;
   const PORT_RANGE = 10;
 
   // Profondita' storica fornita dal fornitore, usata finche' non si conosce
@@ -41,7 +43,7 @@
   };
 
   const state = {
-    base: null,          // indirizzo del server locale, es. "http://127.0.0.1:8901"
+    base: null,          // indirizzo del server locale, es. "http://127.0.0.1:8199"
     status: null,        // ultima risposta di /api/status
     lastMeta: null,      // informazioni sull'ultimo scaricamento riuscito
     lastError: null,     // ultimo errore (stringa) o null

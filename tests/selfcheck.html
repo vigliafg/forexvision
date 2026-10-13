@@ -26,9 +26,12 @@
 <script src="../js/indicators.js"></script>
 <script src="../js/forecast.js"></script>
 <script src="../js/smc.js"></script>
+<script src="../js/divergence.js"></script>
 <script src="../js/sentiment.js"></script>
 <script src="../js/feed.js"></script>
 <script src="../js/report.js"></script>
+<script src="../js/help.js"></script>
+<script src="expected.js"></script>
 <script>
 (function () {
   var out = document.getElementById('out');
@@ -77,6 +80,404 @@
   for (var k = 0; k < 40; k++) atrC.push({ open: 1, high: 1.002, low: 0.998, close: 1, volume: 100 });
   var atrArr = I.atr(atrC.map(function (c) { return c.high; }), atrC.map(function (c) { return c.low; }), atrC.map(function (c) { return c.close; }), 14);
   log(Math.abs(atrArr[39] - 0.004) < 1e-9, 'ATR su candele di ampiezza fissa 40 pip', 'atr=' + atrArr[39]);
+
+  // ---------- 1b. indicatori di trend e di inversione ----------
+  // serie monotona crescente e serie oscillatoria: le due letture opposte
+  var upC = [], upH = [], upL = [], oscC = [], oscH = [], oscL = [];
+  for (var ti = 0; ti < 160; ti++) {
+    var tv = 1 + ti * 0.002;
+    upC.push(tv); upH.push(tv + 0.0006); upL.push(tv - 0.0006);
+  }
+  for (var oi = 0; oi < 200; oi++) {
+    var ov = 1 + 0.001 * Math.sin(oi);
+    oscC.push(ov); oscH.push(ov + 0.0012); oscL.push(ov - 0.0012);
+  }
+
+  var stArr = I.supertrend(upH, upL, upC, 10, 3);
+  log(stArr.dir[159] === 1 && stArr.line[159] <= upC[159],
+    'SuperTrend: in un trend rialzista la linea sta sotto il prezzo (sostegno)',
+    'linea=' + stArr.line[159].toFixed(5) + ' dir=' + stArr.dir[159]);
+  var psArr = I.psar(upH, upL, 0.02, 0.2);
+  log(psArr[159] < upC[159], 'Parabolic SAR sotto il prezzo in un trend rialzista', 'sar=' + psArr[159].toFixed(5));
+  log(isFiniteArr(psArr) === 0, 'Parabolic SAR senza NaN');
+
+  var arArr = I.aroon(upH, upL, 25);
+  log(arArr.up[159] === 100 && arArr.down[159] === 0,
+    'Aroon: in una serie sempre crescente il massimo e il minimo piu' + ' recenti sono opposti',
+    'up=' + arArr.up[159] + ' down=' + arArr.down[159]);
+
+  var vxArr = I.vortex(upH, upL, upC, 14);
+  log(vxArr.plus[159] > vxArr.minus[159] && vxArr.plus[159] > 1,
+    'Vortex: VI+ sopra VI- e sopra 1 in un trend rialzista',
+    'VI+=' + vxArr.plus[159].toFixed(2) + ' VI-=' + vxArr.minus[159].toFixed(2));
+
+  var dmArr = I.dmi(upH, upL, upC, 14);
+  log(dmArr.adx[159] === I.adx(upH, upL, upC, 14)[159] && dmArr.plusDI[159] > dmArr.minusDI[159],
+    'DMI: +DI sopra -DI nel rialzo e ADX invariato dopo il refactoring',
+    '+DI=' + dmArr.plusDI[159].toFixed(1) + ' -DI=' + dmArr.minusDI[159].toFixed(1) +
+    ' ADX=' + dmArr.adx[159].toFixed(1));
+  log(isFiniteArr(I.adxr(dmArr.adx, 14)) === 0, 'ADXR calcolato senza NaN');
+
+  var cciArr = I.cci(upH, upL, upC, 20);
+  log(cciArr[159] > 100, 'CCI oltre +100 in una serie in salita', 'cci=' + cciArr[159].toFixed(1));
+  log(isFiniteArr(I.cci(oscH, oscL, oscC, 20)) === 0, 'CCI senza NaN su una serie oscillante');
+
+  var srArr = I.stochRsi(oscC, 14, 14, 3, 3);
+  var srVals = srArr.k.slice(150, 200).filter(function (v) { return v != null; });
+  var srOk = srVals.length > 10 && srVals.every(function (v) { return v >= 0 && v <= 100; });
+  var srSpread = srOk && srVals.length > 1 ? Math.max.apply(null, srVals) - Math.min.apply(null, srVals) : 0;
+  log(srOk && srSpread > 5, 'Stochastic RSI nell\u2019intervallo 0-100 e oscillante',
+    'min/max K = ' + (srOk ? Math.min.apply(null, srVals).toFixed(1) + '/' + Math.max.apply(null, srVals).toFixed(1) : 'n.d.'));
+
+  var chopUp = I.choppiness(upH, upL, upC, 14), chopOsc = I.choppiness(oscH, oscL, oscC, 14);
+  log(chopUp[159] < 38 && chopOsc[159] > 55,
+    'Choppiness Index: basso sul trend, alto sul laterale',
+    'trend=' + chopUp[159].toFixed(1) + ' laterale=' + chopOsc[159].toFixed(1));
+
+  var kcArr = I.keltner(upH, upL, upC, 20, 10, 2);
+  log(kcArr.upper[159] > kcArr.middle[159] && kcArr.middle[159] > kcArr.lower[159],
+    'Keltner: banda superiore, media e inferiore in ordine',
+    kcArr.lower[159].toFixed(5) + ' < ' + kcArr.middle[159].toFixed(5) + ' < ' + kcArr.upper[159].toFixed(5));
+
+  var ichArr = I.ichimoku(upH, upL, upC, 9, 26, 52);
+  log(ichArr.spanA[159] != null && ichArr.spanB[159] != null && ichArr.kijun[159] <= upC[159],
+    'Ichimoku: nuvola disponibile e prezzo sopra la linea base',
+    'kijun=' + ichArr.kijun[159].toFixed(5) + ' spanA=' + ichArr.spanA[159].toFixed(5));
+  log(ichArr.spanA[40] == null && ichArr.spanB[70] == null && ichArr.spanA[51] != null,
+    'Ichimoku: la nuvola compare solo a warm-up completo (nessun look-ahead)',
+    'spanA[40]=' + ichArr.spanA[40] + ' spanB[70]=' + ichArr.spanB[70] + ' spanA[51]=' + (ichArr.spanA[51] != null ? 'ok' : 'null'));
+
+  // ---------- 1c. divergenze prezzo / oscillatori ----------
+  var DIV = window.Divergence;
+  log(!!DIV && typeof DIV.analyze === 'function', 'Modulo divergenze caricato');
+  // serie a doppio minimo: il secondo e' piu' basso ma con RSI piu' alto
+  var dvPts = [], dvv = 1.1;
+  for (var w = 0; w < 20; w++) { dvv += (w % 2 ? -0.0006 : 0.0006); dvPts.push(dvv); }
+  for (var w1 = 0; w1 < 7; w1++) { dvv -= 0.0012; dvPts.push(dvv); }
+  for (var w2 = 0; w2 < 6; w2++) { dvv += 0.0009; dvPts.push(dvv); }
+  for (var w3 = 0; w3 < 16; w3++) { dvv += (w3 % 3 === 2 ? 0.0004 : -0.0007); dvPts.push(dvv); }
+  for (var w4 = 0; w4 < 8; w4++) { dvv += 0.0003; dvPts.push(dvv); }
+  var dvCandles = dvPts.map(function (c, k) {
+    return { time: Date.UTC(2026, 8, 1) + k * 3600000, open: c, high: c + 0.0004, low: c - 0.0004, close: c, volume: 100 };
+  });
+  var dvInd = I.computeAll(dvCandles);
+  var dvRes = DIV.analyze(dvCandles, dvInd, D.instrumentBySymbol('EUR/USD'), { atr: I.last(dvInd.atr) });
+  var dvBull = dvRes.items.filter(function (it) { return it.osc === 'RSI' && it.dir > 0 && it.kind === 'regular'; })[0];
+  log(!!dvBull && dvBull.to.price < dvBull.from.price && dvBull.to.osc > dvBull.from.osc,
+    'Divergenza regolare rialzista: minimo piu\u2019 basso con RSI piu\u2019 alto',
+    dvBull ? ('prezzo ' + dvBull.from.price.toFixed(5) + ' \u2192 ' + dvBull.to.price.toFixed(5) +
+      ' \u00b7 RSI ' + dvBull.from.osc.toFixed(1) + ' \u2192 ' + dvBull.to.osc.toFixed(1)) : 'non rilevata');
+  log(dvRes.score > 0 && dvRes.score <= 1, 'La divergenza rialzista produce un punteggio positivo',
+    'score=' + dvRes.score.toFixed(2));
+
+  // ogni voce rispettata la propria definizione, ordine e causalita'
+  var dvDef = 0, dvOrder = 0, dvCausal = 0, dvSide = 0;
+  dvRes.items.forEach(function (it, k) {
+    var dPrice = it.to.price - it.from.price, dOsc = it.to.osc - it.from.osc;
+    if (it.kind === 'regular') {
+      if (!((it.side === 'low' && dPrice < 0 && dOsc > 0) || (it.side === 'high' && dPrice > 0 && dOsc < 0))) dvDef++;
+    } else if (!((it.side === 'low' && dPrice > 0 && dOsc < 0) || (it.side === 'high' && dPrice < 0 && dOsc > 0))) dvDef++;
+    if (it.dir !== (it.side === 'low' ? 1 : -1)) dvSide++;
+    if (k > 0 && dvRes.items[k - 1].index < it.index) dvOrder++;
+    if (it.to.index + 3 > dvCandles.length - 1) dvCausal++;
+  });
+  log(dvDef === 0 && dvSide === 0, 'Ogni divergenza rispetta la definizione e il verso del lato',
+    'voci=' + dvRes.items.length + ' \u00b7 violazioni=' + (dvDef + dvSide));
+  log(dvOrder === 0, 'Divergenze ordinate dalla piu\u2019 recente');
+  log(dvCausal === 0, 'Divergenze solo su swing gia\u2019 confermati (nessun look-ahead)',
+    'voci=' + dvRes.items.length);
+  var dvAgain = DIV.analyze(dvCandles, dvInd, D.instrumentBySymbol('EUR/USD'), { atr: I.last(dvInd.atr) });
+  log(dvAgain.items.length === dvRes.items.length && dvAgain.score === dvRes.score,
+    'Rilevatore di divergenze deterministico a parita\u2019 di dati');
+  log(dvRes.items.length === 0 || dvRes.items.every(function (it) { return isFinite(it.score); }),
+    'Punteggi delle divergenze finiti');
+
+  // ---------- 1c-bis. studio di efficacia delle divergenze ----------
+  // Lo studio cammina la serie e misura l'esito successivo di ogni divergenza:
+  // quante volte il movimento e' andato nel verso del segnale e di quanto, in
+  // multipli di ATR. Qui si verificano causalita', coerenza statistica e
+  // prudenza del verdetto.
+  var stInst = D.instrumentBySymbol('EUR/USD');
+  var stCandles = D.generateSeries('EUR/USD', 'H1', 0).candles;
+  var stInd = I.computeAll(stCandles);
+  var stSmc = window.SMC.analyze(stCandles, stInd, stInst);
+  var stOpts = { horizon: 10, window: 300, swings: stSmc.swings, atr: I.last(stInd.atr) };
+  var stStudy = DIV.backtest(stCandles, stInd, stInst, stOpts);
+  log(!!stStudy && stStudy.count > 0, 'Studio di efficacia: casi misurati sulla serie',
+    'casi=' + stStudy.count + ' su ' + stStudy.window + ' barre, esito a ' + stStudy.horizon + ' barre');
+  var stEntry = 0, stCausal = 0, stBadR = 0, stBadWin = 0, stBadDir = 0;
+  stStudy.trades.forEach(function (t) {
+    if (t.entryIdx !== t.index + 3) stEntry++;
+    if (!(t.entryIdx > t.index && t.entryIdx + stStudy.horizon < stCandles.length)) stCausal++;
+    if (t.dir !== (t.side === 'low' ? 1 : -1)) stBadDir++;
+    var unit = stInd.atr[t.entryIdx];
+    var r = ((stCandles[t.entryIdx + stStudy.horizon].close - stCandles[t.entryIdx].close) * t.dir) / unit;
+    if (Math.abs(r - t.r) > 1e-9) stBadR++;
+    if (t.win !== (t.r > 0)) stBadWin++;
+  });
+  log(stEntry === 0, 'Studio: l\u2019esito parte alla barra di conferma dello swing (3 barre dopo)',
+    'casi=' + stStudy.trades.length);
+  log(stCausal === 0, 'Studio: nessun caso usa dati futuri rispetto alla propria entrata');
+  log(stBadDir === 0 && stBadWin === 0, 'Studio: esito coerente con il verso del segnale');
+  log(stBadR === 0, 'Studio: ogni esito normalizzato con l\u2019ATR del momento del segnale, non con quello finale',
+    'violazioni=' + stBadR);
+  var stR = stStudy.trades.map(function (t) { return t.r; });
+  var stWins = stStudy.trades.filter(function (t) { return t.win; }).length;
+  var stMean = stR.reduce(function (a, v) { return a + v; }, 0) / stR.length;
+  var stSd = Math.sqrt(stR.reduce(function (a, v) { return a + (v - stMean) * (v - stMean); }, 0) / (stR.length - 1));
+  var stAll = stStudy.all;
+  log(stAll.count === stR.length && Math.abs(stAll.hitRate - stWins / stR.length) < 1e-12,
+    'Studio: tasso di successo coerente con i casi misurati', (stAll.hitRate * 100).toFixed(1) + '%');
+  log(stAll.count > 1 && Math.abs(stAll.avgR - stMean) < 1e-12 &&
+    Math.abs(stAll.ci95 - 1.96 * stSd / Math.sqrt(stR.length)) < 1e-12,
+    'Studio: media e intervallo di confidenza al 95% calcolati sugli esiti',
+    'R=' + stAll.avgR.toFixed(3) + ' \u00b1 ' + stAll.ci95.toFixed(3));
+  log(stAll.significant === (stAll.avgR - stAll.ci95 > 0),
+    'Studio: il vantaggio e\u2019 dichiarato solo se supera l\u2019incertezza statistica',
+    'significativo=' + stAll.significant);
+  var stPf = stAll.profitFactor;
+  log(stAll.count === 0 || (isFinite(stPf) ? stPf >= 0 : stPf === Infinity),
+    'Studio: profit factor non negativo', String(stPf).slice(0, 6));
+  log(stStudy.byKind.regular.count + stStudy.byKind.hidden.count === stStudy.count,
+    'Studio: regolari e nascoste coprono tutti i casi',
+    stStudy.byKind.regular.count + ' + ' + stStudy.byKind.hidden.count + ' = ' + stStudy.count);
+  var stOscKeys = Object.keys(stStudy.byOsc);
+  log(stOscKeys.length >= 2 && stOscKeys.every(function (k) { return stStudy.byOsc[k].count <= stStudy.count; }) &&
+    stOscKeys.indexOf('RSI') >= 0 && stOscKeys.indexOf('MACD') >= 0,
+    'Studio: ripartizione per oscillatore presente', stOscKeys.join(', '));
+  var stAgain = DIV.backtest(stCandles, stInd, stInst, stOpts);
+  log(stAgain.count === stStudy.count && stAgain.all.avgR === stStudy.all.avgR &&
+    stAgain.all.ci95 === stStudy.all.ci95,
+    'Studio: risultato e statistiche riproducibili a parita\u2019 di dati');
+  var stEmpty = DIV.backtest(stCandles.slice(0, 8), stInd, stInst, {});
+  log(stEmpty.count === 0 && stEmpty.all.count === 0 && stEmpty.all.ci95 === 0,
+    'Studio: serie troppo corta gestita senza errori (nessun caso)');
+  // il verdetto sintetico non promette piu' di quanto i numeri dicano
+  var stFlat = DIV.verdictOf({ count: 100, avgR: 0.05, ci95: 0.20, significant: false });
+  var stPos = DIV.verdictOf({ count: 100, avgR: 0.30, ci95: 0.05, significant: true });
+  var stNeg = DIV.verdictOf({ count: 100, avgR: -0.30, ci95: 0.05, significant: false });
+  log(stFlat.level === 'flat' && /zero/.test(stFlat.text),
+    'Verdetto prudente quando l\u2019intervallo di confidenza contiene lo zero', stFlat.text);
+  log(stPos.level === 'pos' && stNeg.level === 'neg',
+    'Verdetto positivo solo con margine oltre l\u2019incertezza, negativo quando l\u2019esito medio e\u2019 in perdita',
+    stPos.text + ' \u00b7 ' + stNeg.text);
+  log(DIV.verdictOf({ count: 0 }).level === 'flat' &&
+    DIV.verdictOf(null).level === 'flat',
+    'Verdetto senza campionamento non dichiara alcun vantaggio');
+
+  // ---------- 1d. pivot point ----------
+  var pvCandles = [], pvp = 1.1;
+  for (var q = 0; q < 96; q++) {
+    pvp += 0.0004 * Math.sin(q / 6);
+    pvCandles.push({ time: Date.UTC(2026, 8, 1) + q * 3600000, open: pvp, high: pvp + 0.0009, low: pvp - 0.0009, close: pvp + 0.0002, volume: 100 });
+  }
+  function pvKeySame(a, b) {
+    return a && b && Math.abs(a.high - b.high) < 1e-12 &&
+      Math.abs(a.low - b.low) < 1e-12 && Math.abs(a.close - b.close) < 1e-12;
+  }
+  var pv = I.pivotPoints(pvCandles, 60);
+  var pc = pv.classic;
+  log(!!pv && pc.r3 > pc.r2 && pc.r2 > pc.r1 && pc.r1 > pc.p && pc.p > pc.s1 && pc.s1 > pc.s2 && pc.s2 > pc.s3,
+    'Pivot classici in ordine R3 > R2 > R1 > P > S1 > S2 > S3');
+  log(pv.camarilla.r4 > pv.camarilla.r3 && pv.camarilla.r3 > pv.camarilla.r2 &&
+    pv.camarilla.r2 > pv.camarilla.r1 && pv.camarilla.s1 > pv.camarilla.s2 && pv.camarilla.s2 > pv.camarilla.s3,
+    'Pivot Camarilla in ordine');
+  log(Math.abs(pc.p - (pv.high + pv.low + pv.close) / 3) < 1e-12,
+    'Il pivot centrale e\u0300 la media di massimo, minimo e chiusura del periodo precedente',
+    'P=' + pc.p.toFixed(5));
+  // i pivot devono venire dall'ultimo periodo CHIUSO: si ricalcolano qui
+  // massimo, minimo e chiusura di quel periodo e si confrontano
+  var pvKeys = [], pvAgg = {};
+  pvCandles.forEach(function (c) {
+    var kk = I.periodKey(c.time, 60);
+    if (pvKeys[pvKeys.length - 1] !== kk) pvKeys.push(kk);
+    if (!pvAgg[kk]) pvAgg[kk] = { high: c.high, low: c.low, close: c.close };
+    else {
+      if (c.high > pvAgg[kk].high) pvAgg[kk].high = c.high;
+      if (c.low < pvAgg[kk].low) pvAgg[kk].low = c.low;
+      pvAgg[kk].close = c.close;
+    }
+  });
+  var pvPrev = pvKeys[pvKeys.length - 2];
+  log(pvKeys.length >= 2 && pv.period === pvPrev && pvKeySame(pv, pvAgg[pvPrev]),
+    'Pivot calcolati sull\u2019ultimo periodo chiuso (quello in corso e\u0300 escluso)',
+    'periodo=' + pv.period + ' su ' + pvKeys.length + ' periodi');
+  log(I.pivotPoints(pvCandles.slice(0, 2), 60) === null, 'Pivot non calcolabili su una serie troppo corta');
+
+  var lrUp = I.linreg(upC, 50), lrOsc = I.linreg(oscC, 50);
+  log(lrUp.r2[159] > 0.99 && lrUp.slope[159] > 0, 'Regressione: R2 ~ 1 e pendenza positiva su una retta',
+    'R2=' + lrUp.r2[159].toFixed(4));
+  log(lrOsc.r2[159] < 0.5, 'Regressione: R2 basso su una serie che oscilla', 'R2=' + lrOsc.r2[159].toFixed(3));
+
+  // ---------- 1e. spiegazioni delle card (js/help.js) ----------
+  // Ogni card deve saper spiegare se stessa: testo generale e lettura dei dati
+  // presenti. Le spiegazioni vengono provate sia senza dati (prima analisi,
+  // ponte non raggiungibile) sia con un contesto completo: in nessuno dei due
+  // casi devono andare in errore o stampare valori senza senso.
+  var CH = window.CardHelp;
+  log(!!CH && typeof CH.explain === 'function' && typeof CH.has === 'function',
+    'Modulo delle spiegazioni caricato');
+  var chKeys = CH.keys();
+  log(chKeys.length >= 19, 'Una spiegazione per ogni card e ogni grafico',
+    'spiegazioni = ' + chKeys.length + ' (' + chKeys.slice(0, 5).join(', ') + ' ...)');
+  var chBad = [], chThin = [];
+  chKeys.forEach(function (k) {
+    var e = CH.EXPLAIN[k];
+    if (!e || typeof e.title !== 'string' || !e.title.trim()) chBad.push(k + ':titolo');
+    if (!Array.isArray(e.general) || e.general.length < 1 ||
+      !e.general.every(function (t) { return typeof t === 'string' && t.trim().length > 40; })) chBad.push(k + ':generale');
+    if (!Array.isArray(e.reading) || e.reading.length < 2) chBad.push(k + ':lettura');
+    if (typeof e.now !== 'function') chBad.push(k + ':dati');
+    if (e && e.general && e.general.join(' ').length < 150) chThin.push(k);
+  });
+  log(chBad.length === 0, 'Ogni spiegazione ha titolo, testo generale, lettura e parte sui dati',
+    'problemi = ' + (chBad.join(', ') || 'nessuno'));
+  log(chThin.length === 0, 'Il testo generale di ogni card e\u2019 sostanzioso, non una riga vuota',
+    'corte = ' + (chThin.join(', ') || 'nessuna'));
+
+  // senza dati: niente errori, niente valori senza senso
+  var chNoData = [], chEmpty = [];
+  chKeys.forEach(function (k) {
+    var res = CH.explain(k, {});
+    if (!res || !res.html) { chNoData.push(k); return; }
+    if (/undefined|NaN|\[object|Infinity/.test(res.html)) chNoData.push(k + ':valori');
+    if (res.html.indexOf('Che cosa mostra questa card') < 0 ||
+      res.html.indexOf('Come si legge') < 0 || res.html.indexOf('In questo momento') < 0) chEmpty.push(k);
+  });
+  log(chNoData.length === 0, 'Senza dati le spiegazioni non vanno in errore e non mostrano valori senza senso',
+    'problemi = ' + (chNoData.join(', ') || 'nessuno'));
+  var chNullCtx = CH.explain('signal', null);
+  log(!!chNullCtx && chNullCtx.html.indexOf('In questo momento') > 0,
+    'Contesto assente (null) gestito senza eccezioni');
+  log(chEmpty.length === 0, 'Ogni finestra ha le tre sezioni previste',
+    'mancanti = ' + (chEmpty.join(', ') || 'nessuna'));
+  log(CH.explain('chiave-inesistente') === null && CH.has('chiave-inesistente') === false &&
+    CH.has('signal') === true,
+    'Chiave sconosciuta rifiutata, chiave nota riconosciuta');
+
+  // con dati veri di una serie generata: la parte "adesso" legge lo stato
+  var chCandles = D.generateSeries('EUR/USD', 'H1', 0).candles;
+  var chInst = D.instrumentBySymbol('EUR/USD');
+  var chInd = I.computeAll(chCandles);
+  var chAnalysis = F.analyze(chCandles, chInst, 10);
+  var chSmc = window.SMC.analyze(chCandles, chInd, chInst);
+  var chCtx = {
+    inst: chInst, digits: chInst.digits, pair: chInst.symbol, tf: 'H1', tfLabel: '1 ora',
+    horizon: 10, source: 'sim', price: chAnalysis.price, changePct: 0.12, lastVolume: 100,
+    series: { candles: chCandles }, analysis: chAnalysis, smc: chSmc,
+    divergence: DIV.analyze(chCandles, chInd, chInst, { atr: I.last(chInd.atr), swings: chSmc.swings }),
+    pivots: I.pivotPoints(chCandles, 60),
+    divStudy: DIV.backtest(chCandles, chInd, chInst, { horizon: 10, window: 300, swings: chSmc.swings }),
+    backtest: F.backtest(chCandles, chInst, 10, { window: 50 }),
+    news: [], calendar: [], journal: [], market: [{ symbol: 'EUR/USD', score: 0.3 }],
+    activeLayers: ['Medie', 'Volumi']
+  };
+  var chRichBad = [], chGrew = [];
+  chKeys.forEach(function (k) {
+    var bare = CH.explain(k, {}), rich = CH.explain(k, chCtx);
+    if (/undefined|NaN|\[object|Infinity/.test(rich.html)) chRichBad.push(k);
+    var nBare = (bare.html.match(/<li>/g) || []).length;
+    var nRich = (rich.html.match(/<li>/g) || []).length;
+    if (nRich < nBare) chGrew.push(k + ':' + nRich + '<' + nBare);
+  });
+  log(chRichBad.length === 0, 'Con dati completi nessuna spiegazione mostra valori senza senso',
+    'problemi = ' + (chRichBad.join(', ') || 'nessuno'));
+  log(chGrew.length === 0, 'I dati presenti non riducono le righe mostrate',
+    'problemi = ' + (chGrew.join(', ') || 'nessuno'));
+
+  // la parte "adesso" usa davvero i dati di quel momento
+  var chChartHelp = CH.explain('chart', chCtx);
+  log(chChartHelp.html.indexOf(chAnalysis.price.toFixed(chInst.digits)) >= 0,
+    'La spiegazione del grafico cita il prezzo del momento',
+    'prezzo = ' + chAnalysis.price.toFixed(chInst.digits));
+  var chSignalHelp = CH.explain('signal', chCtx);
+  // la coppia sta nella didascalia della finestra (verificata sotto); nel corpo
+  // devono comparire direzione in parole e prezzo del momento
+  log(/ACQUISTO|VENDITA|NEUTRO/.test(chSignalHelp.html) &&
+    chSignalHelp.html.indexOf(chAnalysis.price.toFixed(chInst.digits)) >= 0 &&
+    chSignalHelp.html.indexOf(chAnalysis.direction) < 0,
+    'La spiegazione del segnale cita direzione in parole e prezzo del momento',
+    chAnalysis.direction + ' \u00b7 ' + chAnalysis.price.toFixed(chInst.digits));
+  // stesso contesto con un prezzo diverso: il testo deve cambiare, altrimenti
+  // la spiegazione non sta leggendo i dati ma una versione memorizzata
+  var chCtx2 = JSON.parse(JSON.stringify(chCtx));
+  chCtx2.digits = chInst.digits;
+  chCtx2.price = chAnalysis.price + 0.0123;
+  chCtx2.analysis.price = chAnalysis.price + 0.0123;
+  chCtx2.analysis.direction = 'BUY';
+  var chA = CH.explain('signal', chCtx), chB = CH.explain('signal', chCtx2);
+  log(chA.html !== chB.html && chB.html.indexOf((chAnalysis.price + 0.0123).toFixed(chInst.digits)) >= 0,
+    'Cambiando i dati cambia il testo della spiegazione',
+    'da ' + chAnalysis.price.toFixed(chInst.digits) + ' a ' + (chAnalysis.price + 0.0123).toFixed(chInst.digits));
+  var chAgain = CH.explain('chart', chCtx);
+  log(chAgain.html === chChartHelp.html, 'A parita\u2019 di dati la spiegazione e\u2019 identica');
+
+  // regressioni: ognuno di questi casi era un disallineamento fra la spiegazione
+  // e quello che la card mostrava davvero
+  // 1) il regime di trend e' un numero da 0 a 1: non deve finire nel testo
+  var chRegimeCtx = function (v) {
+    return { pair: 'EUR/USD', tfLabel: '10 minuti', source: 'sim', digits: 5, price: 1.1,
+      analysis: { price: 1.1, atr: 0.001, atrPct: 0.1, trendRegime: v } };
+  };
+  var chRegime = CH.explain('dashPrice', chRegimeCtx(0.82)).html;
+  log(/Regime riconosciuto: tendenza/.test(chRegime) && chRegime.indexOf('0.82') < 0,
+    'Il regime numerico diventa una parola, mai un numero grezzo');
+  var chRange = CH.explain('dashPrice', chRegimeCtx(0.1)).html;
+  log(/Regime riconosciuto: laterale/.test(chRange) && /Regime riconosciuto: misto/
+    .test(CH.explain('dashPrice', chRegimeCtx(0.45)).html),
+    'Sotto e sopra le soglie il regime cambia parola come nella card');
+  // 2) perdita media e discesa dal picco sono magnitudini: si mostrano col meno
+  var chBt = CH.explain('backtest', { pair: 'EUR/USD', tfLabel: '10 minuti', source: 'sim', digits: 5,
+    backtest: { count: 12, winRate: 0.5, avgWin: 2, avgLoss: 1.5, avgR: 0.14, totalR: 5.2,
+      maxDrawdown: 3.1, profitFactor: 1.4 } }).html;
+  log(chBt.indexOf('-1.50') >= 0 && chBt.indexOf('-3.1') >= 0 &&
+    chBt.indexOf('+1.50') < 0 && chBt.indexOf('+3.1') < 0,
+    'Perdita media e discesa massima mostrate col segno meno, come nella card',
+    chBt.match(/perdita media [^ ]+ R/)[0] + ' \u00b7 ' + chBt.match(/discesa massima di [^ ]+ R/)[0]);
+  var chEq = CH.explain('equity', { digits: 5, backtest: { count: 12, totalR: 5.2, maxDrawdown: 3.1 } }).html;
+  log(/Discesa massima dal picco: -3.1 R/.test(chEq),
+    'Anche la curva del backtest presenta la discesa come perdita');
+  // 3) la forza delle valute arriva come {list: [...]}, non come array
+  var chSent = CH.explain('sentiment', { pair: 'EUR/USD', tfLabel: '10 minuti', source: 'sim', digits: 5,
+    sentiment: { direction: 'SELL', score: -0.3, confidence: 0.44,
+      strength: { list: [{ currency: 'USD', score: 96 }, { currency: 'EUR', score: 44 }, { currency: 'JPY', score: 12 }] } } }).html;
+  log(/forte: USD \(forza 96 su 100\)/.test(chSent) && /debole: JPY \(forza 12 su 100\)/.test(chSent),
+    'La classifica delle valute si legge anche quando arriva come oggetto con elenco');
+  log(/Lettura complessiva: RIBASSO/.test(chSent) && chSent.indexOf('SELL') < 0,
+    'La direzione del sentiment usa la parola del badge, non il codice interno');
+  log(/Lettura complessiva: FORTE RIALZO/.test(CH.explain('sentiment', { digits: 5,
+    sentiment: { bias: 'FORTE RIALZO', direction: 'BUY', score: 0.7, confidence: 0.6 } }).html),
+    'Quando la card scrive una lettura piu\u2019 forte la spiegazione la riprende');
+  // 4) i conteggi dichiarano quante voci sono davvero in elenco
+  var chShown = CH.explain('smc', { pair: 'EUR/USD', tfLabel: '10 minuti', source: 'sim', digits: 5,
+    smc: { biasLabel: 'Rialzista', score: 0.4, confidence: 0.5, direction: 1,
+      orderBlocks: [{ status: 'fresh' }, { status: 'fresh' }, { status: 'tested' }, { status: 'invalidated' }],
+      fvgs: [{ status: 'fresh' }],
+      liquidity: [{ taken: true }, { sweptAt: 5 }, { sweptAt: null }] },
+    shown: { ob: 3, fvg: 1, liq: 2 } }).html;
+  log(/Order block: 3 ancora validi su 4 individuati/.test(chShown) &&
+    /il pannello mostra i 3 piu[^\s]* recenti/.test(chShown) &&
+    /Livelli di liquidit[^:]*: 3 individuati, 1 ancora intatti/.test(chShown),
+    'I conteggi SMC distinguono individuati, validi e voci in elenco',
+    chShown.match(/Order block: [^.]+/)[0]);
+  log(/il pannello ne mostra 2/.test(chShown), 'La liquidita\u0300 dichiara quante voci mostra il pannello');
+  // senza il conteggio dell'app la riga non inventa un numero
+  var chNoShown = CH.explain('smc', { smc: { biasLabel: 'Ribassista', score: -0.3, confidence: 0.4,
+    direction: -1, orderBlocks: [{ status: 'fresh' }], fvgs: [], liquidity: [] } }).html;
+  log(chNoShown.indexOf('il pannello') < 0,
+    'Senza il dato dell\u2019app la spiegazione non dichiara quante voci sono in elenco');
+  // i moduli non usano la stessa convenzione per la direzione (BUY/SELL contro
+  // 1/-1): nella spiegazione deve comparire sempre una parola, mai un numero
+  var chDirCtx = { pair: 'EUR/USD', tfLabel: '10 minuti', source: 'sim', price: 1.1, digits: 5,
+    analysis: { score: 0.2, direction: 'BUY', confidence: 0.5, price: 1.1 },
+    smc: { score: 0.43, direction: 1, confidence: 0.54, biasLabel: 'Rialzista' },
+    sentiment: { score: -0.3, direction: 'SELL', confidence: 0.45 } };
+  var chDirHtml = CH.explain('dashVerdict', chDirCtx).html;
+  log(/ACQUISTO/.test(chDirHtml) && /VENDITA/.test(chDirHtml) && !/\((1|-1|0)\)/.test(chDirHtml),
+    'Le direzioni sono tradotte in parole anche quando il modulo usa numeri',
+    chDirHtml.match(/\((ACQUISTO|VENDITA|NEUTRO|1|-1)\)/g).join(' '));
+  log(chChartHelp.subtitle.indexOf(chInst.symbol) >= 0 && /ora|minuti|giornaliero/.test(chChartHelp.subtitle),
+    'La finestra dichiara coppia, timeframe e natura dei dati', chChartHelp.subtitle);
 
   // ---------- 2. generatore di serie ----------
   var badOHLC = 0, badVol = 0;
@@ -146,6 +547,22 @@
     if (Array.isArray(v)) nan += isFiniteArr(v);
   });
   log(nan === 0, 'Nessun NaN negli indicatori calcolati', 'nan=' + nan);
+
+  // gli indicatori di trend e inversione devono essere esposti e senza NaN
+  var newKeys = ['superTrend', 'psar', 'aroon', 'vortex', 'cci', 'stochRsi', 'choppiness',
+    'keltner', 'ichimoku', 'linreg', 'adxr', 'plusDI', 'minusDI'];
+  var missingKeys = newKeys.filter(function (k) { return a.indicators[k] === undefined; });
+  log(missingKeys.length === 0, 'computeAll espone gli indicatori di trend e inversione',
+    missingKeys.length ? 'mancanti: ' + missingKeys.join(', ') : newKeys.length + ' voci');
+  var nanTrend = 0;
+  [a.indicators.plusDI, a.indicators.minusDI, a.indicators.adxr, a.indicators.superTrend.line,
+    a.indicators.superTrend.dir, a.indicators.psar, a.indicators.aroon.up, a.indicators.aroon.down,
+    a.indicators.vortex.plus, a.indicators.vortex.minus, a.indicators.cci, a.indicators.stochRsi.k,
+    a.indicators.stochRsi.d, a.indicators.choppiness, a.indicators.keltner.upper, a.indicators.keltner.lower,
+    a.indicators.ichimoku.tenkan, a.indicators.ichimoku.kijun, a.indicators.ichimoku.spanA,
+    a.indicators.ichimoku.spanB, a.indicators.ichimoku.chikou, a.indicators.linreg.r2, a.indicators.linreg.slope
+  ].forEach(function (arr) { nanTrend += isFiniteArr(arr); });
+  log(nanTrend === 0, 'Nessun NaN negli indicatori di trend e inversione', 'nan=' + nanTrend);
 
   // ---------- 4. matrice completa (tutte le coppie x timeframe) ----------
   var t0 = performance.now();
@@ -232,8 +649,11 @@
   var gold = D.instrumentBySymbol('XAU/USD');
   var goldPips = meanAtrPct('XAU/USD', 'H1', CAL_SEEDS) / 100 * gold.base / D.pipSize(gold);
   log(goldPips > 200 && goldPips < 800, 'ATR oro H1 coerente (2-8 USD per barra)', (goldPips / 100).toFixed(2) + ' USD');
-  log(D.pipSize(eur) === 0.0001 && D.pipSize(D.instrumentBySymbol('USD/JPY')) === 0.01,
-    'Dimensione del pip corretta (0,0001 per EUR/USD, 0,01 per USD/JPY)');
+  // confronto a tolleranza: Math.pow(10,-4) differisce dal letterale 0.0001
+  // per un ulp (1,4e-20), quindi il confronto esatto fallirebbe a torto
+  log(Math.abs(D.pipSize(eur) - 0.0001) < 1e-12 && Math.abs(D.pipSize(D.instrumentBySymbol('USD/JPY')) - 0.01) < 1e-12,
+    'Dimensione del pip corretta (0,0001 per EUR/USD, 0,01 per USD/JPY)',
+    'pip EUR/USD=' + D.pipSize(eur) + ' pip USD/JPY=' + D.pipSize(D.instrumentBySymbol('USD/JPY')));
 
   // ---------- 7. Smart Money Concepts ----------
   var SMC = window.SMC, SEN = window.Sentiment;
@@ -649,10 +1069,15 @@
 
   // ---------- 9. Report divulgativo ----------
   var REP = window.Report;
+  function glossaryItemsOk(items) {
+    return items.every(function (g) { return g.term && g.term.length >= 2 && g.text && g.text.length >= 30; });
+  }
   var reportCtx = {
     pair: 'EUR/USD', tf: 'H1', horizon: 10,
     instrument: smcInst, candles: smcCandles,
-    analysis: a, smc: smc, sentiment: sen, confluence: cfAll
+    analysis: a, smc: smc, sentiment: sen, confluence: cfAll,
+    divergence: window.Divergence.analyze(smcCandles, smcInd, smcInst, { atr: I.last(smcInd.atr) }),
+    pivots: I.pivotPoints(smcCandles, 60)
   };
   var rep = REP.build(reportCtx);
 
@@ -730,6 +1155,25 @@
   log(missing.length === 0, 'Ogni termine tecnico usato nel report e\u0300 spiegato nel glossario',
     missing.length ? 'non spiegati: ' + missing.join(', ') : 'tutti i termini usati sono coperti');
 
+  // le letture nuove (SuperTrend, Ichimoku, divergenze, pivot) devono comparire
+  // nella tabella tecnica e restare spiegate nel glossario
+  var nuoviTermini = ['SuperTrend', 'Ichimoku', 'Divergenza', 'Pivot point'];
+  var nuoviMancanti = nuoviTermini.filter(function (t) { return bodyText.indexOf(t.toLowerCase()) === -1; });
+  log(nuoviMancanti.length === 0, 'Il report spiega anche le letture nuove (trend, divergenze, pivot)',
+    nuoviMancanti.length ? 'assenti: ' + nuoviMancanti.join(', ') : nuoviTermini.join(', '));
+  // stessa regola del controllo generale: basta che il termine e la voce si
+  // contengano a vicenda ("Divergenze" nel testo, "Divergenza" nel glossario)
+  var nuoviGlossario = nuoviTermini.filter(function (t) {
+    var term = t.toLowerCase();
+    return rep.glossary.some(function (g) {
+      var g2 = g.term.toLowerCase();
+      return g2.indexOf(term) !== -1 || term.indexOf(g2) !== -1;
+    });
+  });
+  log(nuoviGlossario.length === nuoviTermini.length, 'Le nuove voci di glossario sono presenti',
+    rep.glossary.length + ' voci totali');
+  log(glossaryItemsOk(rep.glossary), 'Ogni nuova voce di glossario ha termine e spiegazione');
+
   // frasi brevi: si controllano i paragrafi e i riquadri (il testo discorsivo)
   var prose = rep.blocks.filter(function (b) {
     return b.type === 'p' || b.type === 'callout';
@@ -805,6 +1249,212 @@
   info('  ADX(14)       = ' + a.adx.toFixed(1) + '   regime = ' + (a.trendRegime > 0.6 ? 'trend' : a.trendRegime < 0.3 ? 'laterale' : 'misto'));
   info('  backtest      = ' + bt.count + ' operazioni, hit rate ' + (bt.winRate * 100).toFixed(1) +
     '%, media ' + bt.avgR.toFixed(3) + ' R/trade, profit factor ' + (isFinite(bt.profitFactor) ? bt.profitFactor.toFixed(2) : 'inf'));
+
+  // ---------- 10. Tabella dei valori attesi, generata dai dati ----------
+  // La tabella (tests/expected.js) e' l'unico riferimento dei controlli sulle
+  // spiegazioni. Qui si verifica la tabella stessa e il suo funzionamento su
+  // dati sintetici: nessuna app, nessun browser.
+  var EV = window.ExpectedValues;
+  log(!!EV && EV.READS.length >= 100, 'La tabella dei valori attesi e\u2019 caricata e piena',
+    EV ? EV.READS.length + ' letture dichiarate \u00b7 ' + EV.STRUCT.length + ' costanti di formula' : 'tabella assente');
+  var evLabels = EV.READS.map(function (r) { return r.label; });
+  var evDups = evLabels.filter(function (l, i) { return evLabels.indexOf(l) !== i; });
+  log(evDups.length === 0, 'Ogni lettura ha un nome proprio: le etichette sono uniche',
+    evDups.length ? 'duplicate = ' + evDups.join(', ') : evLabels.length + ' etichette');
+  var evKeys = window.CardHelp.keys();
+
+  /* --- l'algoritmo di derivazione, su un markup minimo -------------------
+   * Il contratto di una spiegazione e' l'insieme delle letture i cui selettori
+   * cadono dentro la sua card. Qui si prova l'algoritmo su un documento finto,
+   * controllando anche le due regole delicate: un valore mostrato in due
+   * pannelli appartiene a entrambi, e un pannello vuoto non promette niente. */
+  function fixture(markup) {
+    return new DOMParser().parseFromString('<!DOCTYPE html><html><body>' + markup + '</body></html>',
+      'text/html');
+  }
+  var fixDoc = fixture(
+    '<div class="card" data-help="uno"><span id="planTp">1.23456</span></div>' +
+    '<div class="card" data-help="due"><span id="dashLadder">1.23456</span></div>' +
+    '<div class="card" data-help="tre"><div id="dashEvent"></div></div>' +
+    '<div class="card" data-help="quattro"><span id="journalSummary">3 operazioni</span>' +
+    '  <div class="chart-help-row"><canvas id="chart"></canvas>' +
+    '  <button data-help-key="quattro"></button></div></div>');
+  var fixDer = EV.contracts(fixDoc);
+  var fixOwn = EV.owners(fixDoc);
+  log(Object.keys(fixOwn).sort().join(',') === 'due,quattro,tre,uno',
+    'Le chiavi dei contratti si leggono dal markup (data-help e i bottoni dei grafici)',
+    Object.keys(fixOwn).join(', ') || 'nessuna');
+  log((fixDer.uno || []).indexOf('obiettivo tecnico') >= 0 &&
+    (fixDer.due || []).indexOf('obiettivo tecnico') >= 0 &&
+    (fixDer.uno || []).indexOf('candele in memoria') < 0 &&
+    (fixDer.quattro || []).indexOf('candele in memoria') >= 0,
+    'Una lettura va alle card che la contengono; un grafico minore ha il suo pannello',
+    'uno = ' + (fixDer.uno || []).join(' / ') + ' · quattro = ' + (fixDer.quattro || []).join(' / '));
+  log((fixDer.tre || []).length === 0 &&
+    (fixDer.quattro || []).indexOf('operazioni registrate') >= 0 &&
+    (fixDer.uno || []).indexOf('operazioni registrate') < 0,
+    'Un pannello vuoto non promette niente; uno che mostra numeri si\u0300',
+    'tre = ' + ((fixDer.tre || []).length ? fixDer.tre.join(', ') : 'nessuna promessa') +
+    ' · quattro = ' + (fixDer.quattro || []).join(' / '));
+
+  /* --- i contratti veri: derivati dal markup dell'app -------------------- */
+  /* La selfcheck gira senza app: la pagina dei pannelli si legge dal file. */
+  var appDoc = null;
+  try {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '../index.html', false);
+    xhr.send(null);
+    if (xhr.status === 200 || xhr.status === 0) appDoc = new DOMParser().parseFromString(xhr.responseText, 'text/html');
+  } catch (e) { appDoc = null; }
+  log(!!appDoc && !!appDoc.querySelector('[data-help]'),
+    'Il markup dell\u2019app si legge da qui (i contratti vengono dai pannelli, non da un elenco scritto a mano)',
+    appDoc ? 'index.html letto \u00b7 ' + appDoc.querySelectorAll('[data-help]').length + ' card' :
+      'non leggibile: serve il server locale (python3 server.py)');
+  var fxContracts = appDoc ? EV.contracts(appDoc) : {};
+  var fxOwners = appDoc ? EV.owners(appDoc) : {};
+  var evNoPanel = evKeys.filter(function (k) { return !fxOwners[k]; });
+  var evNoKey = Object.keys(fxOwners).filter(function (k) { return evKeys.indexOf(k) < 0; });
+  log(appDoc && evNoPanel.length === 0 && evNoKey.length === 0,
+    'Ogni spiegazione ha il suo pannello e ogni pannello la sua spiegazione',
+    evNoPanel.concat(evNoKey).join(', ') || 'nessun pannello orfano');
+  var evUnknown = [];
+  Object.keys(fxContracts).forEach(function (k) {
+    fxContracts[k].forEach(function (l) {
+      if (evLabels.indexOf(l) < 0) evUnknown.push(k + ':' + l);
+    });
+  });
+  log(evUnknown.length === 0, 'Ogni promessa derivata corrisponde a una lettura dichiarata nella tabella',
+    evUnknown.length ? 'sconosciute = ' + evUnknown.join(', ') : 'riferimenti tutti validi');
+  var evPromised = Object.keys(fxContracts).reduce(function (n, k) { return n + fxContracts[k].length; }, 0);
+  log(evPromised >= evKeys.length, 'I pannelli promettono piu\u2019 di una lettura ciascuno',
+    evPromised + ' promesse su ' + evKeys.length + ' spiegazioni \u00b7 ' +
+    evKeys.filter(function (k) { return !(fxContracts[k] || []).length; }).length +
+    ' spiegazioni senza promesse (pannelli che riempiono solo i dati del momento)');
+
+  // contesto sintetico: la stessa catena dell'app, con dati generati
+  var fxCandles = smcCandles, fxInst = smcInst;
+  var fxAnalysis = F.analyze(fxCandles, fxInst, 10);
+  var fxSmc = SMC.analyze(fxCandles, fxAnalysis.indicators, fxInst);
+  var fxSen = SEN.analyze(cache, 'EUR/USD', fxInst, { includeSimulated: true });
+  var fxDiv = window.Divergence.analyze(fxCandles, fxAnalysis.indicators, fxInst,
+    { atr: I.last(fxAnalysis.indicators.atr), swings: fxSmc.swings });
+  var fxStudy = window.Divergence.backtest(fxCandles, fxAnalysis.indicators, fxInst,
+    { horizon: 10, window: 300, swings: fxSmc.swings });
+  var fxBt = F.backtest(fxCandles, fxInst, 10, { window: 250 });
+  var fxPiv = I.pivotPoints(fxCandles, 60);
+  var fxLast = fxCandles[fxCandles.length - 1];
+  var fxPrev = fxCandles[fxCandles.length - 2];
+  var fxAtr50 = fxAnalysis.indicators.atr.slice(-50).filter(function (x) { return x != null; });
+  var fxAvgAtr = fxAtr50.reduce(function (x, y) { return x + y; }, 0) / (fxAtr50.length || 1);
+  var fxRange = fxCandles.slice(-100);
+  var fxHi = Math.max.apply(null, fxRange.map(function (c) { return c.high; }));
+  var fxLo = Math.min.apply(null, fxRange.map(function (c) { return c.low; }));
+  var fxCtx = {
+    inst: fxInst, digits: fxInst.digits, pair: 'EUR/USD', tf: 'H1', tfLabel: '1 ora',
+    horizon: 10, source: 'sim', activeLayers: ['Medie', 'SMC'],
+    price: fxLast.close, changePct: (fxLast.close - fxPrev.close) / fxPrev.close * 100,
+    lastVolume: fxLast.volume,
+    series: { instrument: fxInst, timeframe: 'H1', candles: fxCandles, source: 'sim',
+      info: { provider: 'serie sintetica', bars: fxCandles.length, dropped: 3, hasVolume: true } },
+    analysis: fxAnalysis, smc: fxSmc, sentiment: fxSen, divergence: fxDiv, divStudy: fxStudy,
+    backtest: fxBt, pivots: fxPiv, confluence: cfAll, market: cache, newsSources: 5,
+    shown: { ob: 3, fvg: 3, liq: 4, divergences: 2, pivots: 7, news: 5, calendar: 3, watchlist: 14, journal: 1 },
+    context: { sessions: ['Londra'], hourUtc: new Date().getUTCHours(),
+      volRatio: fxAnalysis.atr / fxAvgAtr, volBars: 50,
+      volLabel: 'stabile', rangeBars: fxRange.length, rangeBarsWanted: 100, rangeLow: fxLo,
+      rangeHigh: fxHi, rangePosition: (fxAnalysis.price - fxLo) / (fxHi - fxLo) * 100,
+      spread: fxInst.spread, day: 'marted\u00ec', adx: fxAnalysis.adx },
+    news: [{ time: Date.now() - 3600000, source: 'agenzia di prova', kind: 'wire',
+      title: 'Titolo di prova per la tabella' }],
+    calendar: [{ time: Date.now() + 7200000, country: 'EUR', impact: 'High', title: 'Evento di prova' }],
+    /* Il registro con una operazione dentro: cosi' si prova anche il ramo del
+     * registro pieno, non solo la frase del registro vuoto. */
+    journal: [{ time: Date.now() - 86400000, symbol: 'EUR/USD', tf: 'H1', direction: 'BUY',
+      entry: fxAnalysis.price, outcome: 'win' }]
+  };
+  function nowTextOf(key, ctx) {
+    var e = window.CardHelp.EXPLAIN[key];
+    var lines = e && e.now ? e.now(ctx) : [];
+    return lines.map(function (l) { return l && typeof l === 'object' ? (l.text || '') : String(l); })
+      .join(' . ');
+  }
+  var fxBad = [], fxMissing = [], fxEmpty = [], fxNums = 0, fxStamps = 0;
+  evKeys.forEach(function (key) {
+    var r = EV.check(key, fxCtx, nowTextOf(key, fxCtx), fxContracts[key]);
+    fxNums += r.cited;
+    fxStamps += r.stamps.length;
+    r.unresolved.forEach(function (c) { fxBad.push(key + ':' + c.raw); });
+    r.unresolvedStamps.forEach(function (s) { fxBad.push(key + ':data ' + s.raw); });
+    r.missing.forEach(function (m) { fxMissing.push(key + ':' + m); });
+    if (r.promised > 0 && r.cited === 0) fxEmpty.push(key);
+  });
+  log(fxBad.length === 0, 'Su dati sintetici nessuna spiegazione inventa numeri',
+    fxNums + ' numeri in ' + evKeys.length + ' spiegazioni \u00b7 fuori tabella = ' + (fxBad.join(', ') || 'nessuno'));
+  log(fxMissing.length === 0, 'Su dati sintetici ogni spiegazione cita le grandezze che promette',
+    'promesse non mantenute = ' + (fxMissing.join(', ') || 'nessuna'));
+  log(fxEmpty.length === 0, 'Ogni spiegazione porta almeno un dato del momento',
+    fxEmpty.length ? 'senza numeri = ' + fxEmpty.join(', ') : 'tutte con numeri');
+  log(fxStamps > 0, 'Le date citate (calendario, orologio) corrispondono ai dati',
+    fxStamps + ' date/orari verificati');
+
+  /* Una lettura che un pannello mostra ma che resta sempre senza valore e' una
+   * promessa vuota: il pannello la disegnerebbe dal nulla. Su un contesto
+   * completo devono avere un valore tutte le letture collegate a un pannello. */
+  var fxView = EV.view(fxCtx);
+  var boundReads = EV.READS.filter(function (r) {
+    return r.card.length && !r.card.every(function (c) { return c.shown; });
+  });
+  var boundNull = boundReads.filter(function (r) {
+    var v = r.get(fxView, fxCtx);
+    return !(typeof v === 'number' && isFinite(v));
+  });
+  /* Non e' un errore: alcuni pannelli mostrano una voce solo quando i dati la
+   * portano (il VIX con il sentiment reale, i livelli di proiezione oltre il
+   * numero che questo contesto produce). Serve a vederli, non a farli sparire. */
+  info('  letture collegate a un pannello senza valore in questo contesto: ' +
+    (boundNull.length ? boundNull.length + ' su ' + boundReads.length + ' (' +
+      boundNull.slice(0, 6).map(function (r) { return r.label; }).join(', ') +
+      (boundNull.length > 6 ? '\u2026)' : ')') : 'nessuna'));
+
+  // prova di mutazione: la tabella deve accorgersi di un numero sbagliato
+  var btText = nowTextOf('backtest', fxCtx);
+  var btLie = btText.replace(/Scambi simulati: \d+/, 'Scambi simulati: 999');
+  var dpText = nowTextOf('dashPrice', fxCtx);
+  var dpLie = dpText.replace(/1\.\d{5}/, '9.99999');
+  var btLieRes = EV.check('backtest', fxCtx, btLie, fxContracts.backtest);
+  var dpLieRes = EV.check('dashPrice', fxCtx, dpLie, fxContracts.dashPrice);
+  log(!btLieRes.ok && !dpLieRes.ok, 'La tabella intercetta un conteggio e un prezzo sbagliati',
+    'conteggio = ' + ((btLieRes.unresolved[0] || {}).raw || btLieRes.missing[0] || 'non intercettato') +
+    ' \u00b7 prezzo = ' + ((dpLieRes.unresolved[0] || {}).raw || dpLieRes.missing[0] || 'non intercettato'));
+  log(EV.check('backtest', fxCtx, btText, fxContracts.backtest).ok,
+    'Il testo corretto passa: il controllo non e\u2019 compiacente');
+
+  // lettura di numeri, date e orari
+  var parsed = EV.cited('Orario previsto: 14/10/2026, 04:10:00 \u00b7 %K = 77.2 (14,3) \u00b7 variazione -0.01%');
+  log(parsed.stamps.length === 1 &&
+    parsed.numbers.map(function (x) { return x.raw; }).join(',') === '77.2,14,3,-0.01',
+    'Date e orari si leggono prima dei numeri e la virgola separa le voci',
+    parsed.stamps.length + ' data \u00b7 numeri = ' +
+    parsed.numbers.map(function (x) { return x.raw; }).join(','));
+
+  // confronto con la pagina: una card finta con i valori dei dati
+  var probe = document.createElement('div');
+  probe.id = 'pivotGrid';
+  var fxP = fxPiv.classic;
+  probe.innerHTML = [['Pivot', fxP.p], ['R1', fxP.r1], ['R2', fxP.r2], ['R3', fxP.r3],
+    ['S1', fxP.s1], ['S2', fxP.s2], ['S3', fxP.s3]]
+    .map(function (c) {
+      return '<span class="kpi">' + c[0] + ' ' + c[1].toFixed(fxInst.digits) + '</span>';
+    }).join('');
+  document.body.appendChild(probe);
+  var cardsOk = EV.compareCards(fxCtx, document);
+  log(cardsOk.bad.length === 0, 'Una card con i valori dei dati passa il confronto',
+    cardsOk.bad.join(' | ') || cardsOk.checked + ' righe confrontate \u00b7 nessuno scarto');
+  probe.querySelector('.kpi').textContent = 'Pivot ' + (fxP.p + 0.01).toFixed(fxInst.digits);
+  var cardsBad = EV.compareCards(fxCtx, document);
+  log(cardsBad.bad.length > 0, 'Un valore sbagliato nella card viene intercettato',
+    cardsBad.bad.join(' | ').slice(0, 90) || 'non intercettato');
+  probe.parentNode.removeChild(probe);
 
   } catch (err) {
     fail++;

@@ -67,7 +67,7 @@
 <!-- ===================== TAB DASHBOARD ===================== -->
 <section class="tab-panel active" id="tab-dash">
 
-    <div class="card verdict-hero">
+    <div class="card verdict-hero" data-help="dashVerdict">
       <div class="card-head">
         <h2>Tre modelli a confronto</h2>
         <span class="dim" id="confStamp">tecnico &middot; SMC &middot; sentiment</span>
@@ -88,25 +88,28 @@
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-help="dashPrice">
       <div class="card-head"><h2>Prezzo e moto recente</h2><span class="dim" id="dashSparkStamp">last 40 barre</span></div>
-      <canvas id="dashSpark" class="macd-strip" style="height:64px"></canvas>
+      <div class="chart-help-row">
+        <canvas id="dashSpark" class="macd-strip" style="height:64px"></canvas>
+        <button class="card-help" data-help-key="spark" title="Spiega questo grafico con i dati di adesso" aria-label="Spiega la striscia del moto recente">?</button>
+      </div>
       <div class="kpi-row" id="dashPriceKpi"></div>
     </div>
-    <div class="card">
+    <div class="card" data-help="dashLadder">
       <div class="card-head"><h2>Scala operativa</h2><span class="dim">da piano tecnico e SMC</span></div>
       <div class="ladder" id="dashLadder"></div>
     </div>
 
 <div class="dash-duo">
 
-    <div class="card">
+    <div class="card" data-help="dashEvent">
       <div class="card-head"><h2>Prossimo evento ad alto impatto</h2><span class="dim">dal calendario</span></div>
       <div id="dashEvent" class="kpi-row"></div>
       <p class="note small" id="dashEventNote" style="display:none"></p>
     </div>
 
-    <div class="card">
+    <div class="card" data-help="dashWatchlist">
       <div class="card-head"><h2>Watchlist</h2><span class="dim">segnale sintetico</span></div>
       <ul class="watchlist" id="watchlist"></ul>
     </div>
@@ -121,7 +124,7 @@
 <div class="layout">
   <section class="col-main">
 
-    <div class="card chart-card">
+    <div class="card chart-card" data-help="chart">
       <div class="card-head">
         <div class="price-head">
           <h2 id="chartTitle">EUR/USD</h2>
@@ -135,6 +138,11 @@
           <button class="chip active" data-layer="volume">Volumi</button>
           <button class="chip active" data-layer="smc">SMC</button>
           <button class="chip" data-layer="pd">Premio/Sconto</button>
+          <button class="chip" data-layer="st">SuperTrend</button>
+          <button class="chip" data-layer="psar">Parab. SAR</button>
+          <button class="chip" data-layer="ichimoku">Ichimoku</button>
+          <button class="chip" data-layer="div">Divergenze</button>
+          <button class="chip" data-layer="pivot">Pivot</button>
         </div>
       </div>
       <div class="canvas-wrap">
@@ -147,7 +155,41 @@
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-help="trendChart">
+      <div class="card-head">
+        <h2>Indicatori di trend e inversione</h2>
+        <span class="dim" id="trendStamp"></span>
+      </div>
+      <div class="gauge-grid" id="trendBlock"></div>
+      <p class="note small">Indicatori direzionali e di inversione calcolati sulle stesse candele del
+        grafico. Il riquadro <b>Choppiness</b> separa il mercato di tendenza da quello laterale,
+        mentre <b>Keltner</b> confrontato con le bande di Bollinger segnala la compressione
+        (squeeze) che precede i movimenti esplosivi.</p>
+    </div>
+
+    <div class="card" data-help="divChart">
+      <div class="card-head">
+        <h2>Divergenze e livelli di riferimento</h2>
+        <span class="dim" id="divStampChart"></span>
+      </div>
+      <div class="gauge-grid" id="divBlockChart"></div>
+      <h3 class="mini-title">Divergenze prezzo / oscillatori <span class="dim" id="divScopeChart"></span></h3>
+      <ul class="zone-list" id="divListChart"></ul>
+      <h3 class="mini-title">Pivot point <span class="dim" id="pivotStampChart"></span></h3>
+      <div class="kpi-row" id="pivotGridChart"></div>
+      <details class="ind-detail">
+        <summary>Efficacia storica delle divergenze <span class="dim" id="divStudyScopeChart"></span></summary>
+        <div class="div-study" id="divStudyChart"></div>
+        <p class="note small">Quante volte, in passato e su questi dati, il movimento e' andato davvero
+          nel verso indicato dalla divergenza: serve a pesare il segnale invece di fidarsene
+          a scatola chiusa. L'incertezza e' l'intervallo di confidenza al 95% sulla media.</p>
+      </details>
+      <p class="note small">Le <b>divergenze</b> nascono dal confronto fra i punti di swing del
+        prezzo e gli oscillatori (RSI, istogramma MACD). I <b>pivot point</b> sono livelli di
+        riferimento calcolati su massimo, minimo e chiusura del periodo precedente.</p>
+    </div>
+
+    <div class="card" data-help="forecast">
       <div class="card-head">
         <h2>Proiezione probabilistica</h2>
         <span class="dim" id="fcHorizonLabel"></span>
@@ -159,21 +201,19 @@
   </section>
   <aside class="col-side">
 
-    <div class="card">
+    <div class="card" data-help="backtest">
       <div class="card-head"><h2>Backtest storico</h2><span class="dim">ultime 250 candele</span></div>
       <div class="stats" id="btStats"></div>
-      <canvas id="equity" class="equity-canvas"></canvas>
+      <div class="chart-help-row">
+        <canvas id="equity" class="equity-canvas"></canvas>
+        <button class="card-help" data-help-key="equity" title="Spiega questo grafico con i dati di adesso" aria-label="Spiega la curva del backtest">?</button>
+      </div>
       <p class="note">Risultati misurati su serie <b>simulate</b>. Il generatore contiene regimi di
         tendenza persistenti, quindi il modello appare pi&ugrave; efficace di quanto sarebbe su prezzi reali,
         dove un hit rate vicino al 50% &egrave; la norma. Nessun valore qui riportato &egrave; una promessa di rendimento.</p>
     </div>
 
-    <div class="card">
-      <div class="card-head"><h2>Contesto di mercato</h2></div>
-      <ul class="context" id="contextList"></ul>
-    </div>
-
-    <div class="card">
+    <div class="card" data-help="context">
       <div class="card-head"><h2>Contesto di mercato</h2></div>
       <ul class="context" id="contextList"></ul>
     </div>
@@ -187,7 +227,7 @@
 <div class="layout">
   <section class="col-main">
 
-    <div class="card">
+    <div class="card" data-help="signal">
       <div class="card-head">
         <h2>Segnale operativo</h2>
         <span class="dim" id="signalStamp"></span>
@@ -210,6 +250,7 @@
           <div class="plan-row"><span>Prezzo attuale</span><b id="planEntry" class="mono">&mdash;</b></div>
           <div class="plan-row"><span>Obiettivo (TP)</span><b id="planTp" class="mono pos">&mdash;</b></div>
           <div class="plan-row"><span>Stop loss</span><b id="planSl" class="mono neg">&mdash;</b></div>
+          <div class="plan-row"><span>Stop trailing (SuperTrend)</span><b id="planTrail" class="mono">&mdash;</b></div>
           <div class="plan-row"><span>Rapporto R:R</span><b id="planRr" class="mono">&mdash;</b></div>
           <div class="plan-row"><span>Movimento atteso</span><b id="planExp" class="mono">&mdash;</b></div>
           <div class="plan-row"><span>Volatilit&agrave; (ATR)</span><b id="planAtr" class="mono">&mdash;</b></div>
@@ -219,10 +260,41 @@
       <ul id="reasonList" class="reasons"></ul>
     </div>
 
+    <div class="card" data-help="trendTech">
+      <div class="card-head">
+        <h2>Trend e inversione</h2>
+        <span class="dim" id="trendStampTech"></span>
+      </div>
+      <div class="gauge-grid" id="trendBlockTech"></div>
+    </div>
+
+    <div class="card" data-help="divTech">
+      <div class="card-head">
+        <h2>Divergenze e livelli di riferimento</h2>
+        <span class="dim" id="divStamp"></span>
+      </div>
+      <div class="gauge-grid" id="divBlock"></div>
+      <h3 class="mini-title">Divergenze prezzo / oscillatori <span class="dim" id="divScope"></span></h3>
+      <ul class="zone-list" id="divList"></ul>
+      <h3 class="mini-title">Pivot point <span class="dim" id="pivotStamp"></span></h3>
+      <div class="kpi-row" id="pivotGrid"></div>
+      <details class="ind-detail">
+        <summary>Efficacia storica delle divergenze <span class="dim" id="divStudyScope"></span></summary>
+        <div class="div-study" id="divStudy"></div>
+        <p class="note small">Quante volte, in passato e su questi dati, il movimento e' andato davvero
+          nel verso indicato dalla divergenza: serve a pesare il segnale invece di fidarsene
+          a scatola chiusa. L'incertezza e' l'intervallo di confidenza al 95% sulla media.</p>
+      </details>
+      <p class="note small">Le <b>divergenze</b> confrontano i punti di swing del prezzo con RSI e istogramma
+        MACD: dicono se il movimento sta perdendo forza (divergenza <i>regolare</i>) o se sta solo
+        ricaricando (divergenza <i>nascosta</i>). I <b>pivot point</b> sono livelli di riferimento
+        calcolati su massimo, minimo e chiusura del periodo precedente.</p>
+    </div>
+
   </section>
   <aside class="col-side">
 
-    <div class="card">
+    <div class="card" data-help="indTech">
       <div class="card-head"><h2>Indicatori tecnici</h2></div>
       <div class="gauge-grid" id="indBlock"></div>
       <details class="ind-detail"><summary>dettaglio numerico</summary>
@@ -239,7 +311,7 @@
 <!-- ===================== TAB SMC ===================== -->
 <section class="tab-panel" id="tab-smc">
 
-    <div class="card">
+    <div class="card" data-help="smc">
       <div class="card-head">
         <h2>SMC &mdash; Smart Money Concepts</h2>
         <span class="dim" id="smcStamp"></span>
@@ -303,7 +375,7 @@
 <div class="news-band">
 
 
-  <div class="card">
+  <div class="card" data-help="sentiment">
     <div class="card-head">
       <h2>Sentiment di mercato</h2>
       <span class="dim" id="sentStamp"></span>
@@ -345,7 +417,7 @@
     <ul id="sentReasons" class="reasons compact"></ul>
   </div>
 
-  <div class="card news-card">
+  <div class="card news-card" data-help="news">
     <div class="card-head">
       <h2>Notizie e calendario</h2>
       <span class="dim" id="newsStamp"></span>
@@ -367,7 +439,7 @@
 <!-- ===================== TAB REGISTRO ===================== -->
 <section class="tab-panel" id="tab-registro">
 
-<section class="card journal">
+<section class="card journal" data-help="journal">
   <div class="card-head">
     <h2>Registro operazioni virtuali</h2>
     <div>
@@ -416,6 +488,22 @@
   </div>
 </div>
 
+<!-- ===================== FINESTRA DI AIUTO DELLE CARD ===================== -->
+<div id="helpOverlay" class="report-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+  <div class="report-sheet help-sheet" id="helpSheet">
+    <header class="report-head">
+      <div>
+        <h2 id="helpTitle">Spiegazione</h2>
+        <p class="dim" id="helpSubtitle">&mdash;</p>
+      </div>
+      <div class="report-actions">
+        <button id="helpClose" class="btn btn-primary">Chiudi</button>
+      </div>
+    </header>
+    <div class="report-body" id="helpBody"></div>
+  </div>
+</div>
+
 <script>
   // Raccoglitore diagnostico: gli errori non gestiti finiscono in window.__errors,
   // utile per il debug e per i test automatici (tests/selfcheck.html, tests/smoke.html).
@@ -428,8 +516,10 @@
 <script src="js/indicators.js"></script>
 <script src="js/forecast.js"></script>
 <script src="js/smc.js"></script>
+<script src="js/divergence.js"></script>
 <script src="js/sentiment.js"></script>
 <script src="js/report.js"></script>
+<script src="js/help.js"></script>
 <script src="js/feed.js"></script>
 <script src="js/chart.js"></script>
 <script src="js/ui.js"></script>

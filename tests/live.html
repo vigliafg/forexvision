@@ -15,6 +15,7 @@
 <div id="summary">in esecuzione...</div>
 <div id="log"></div>
 <iframe id="app" src="../index.html"></iframe>
+<script src="expected.js"></script>
 <script>
 (function () {
   var out = document.getElementById('log');
@@ -183,6 +184,48 @@
         sel.dispatchEvent(new w.Event('change', { bubbles: true }));
         return waitFor(function () { return /\bDATI REALI\b/.test($('#feedBadge').textContent); }, 12000).then(function (back) {
           log(back, 'Torna ai dati reali selezionando EUR/USD');
+
+          // --- controllo incrociato sui dati reali: la stessa tabella di valori
+          // attesi usata dal test dell'interfaccia, ma qui i prezzi sono veri,
+          // le date arrivano dal calendario e il sentiment dalla CFTC.
+          var EV = window.ExpectedValues;
+          function appData() { return w.ForexApp && w.ForexApp.context ? w.ForexApp.context() : null; }
+          function helpButton(key) {
+            return $$('.card-help').filter(function (b) { return b.getAttribute('data-help-key') === key; })[0];
+          }
+          log(!!EV && !!appData(), 'La tabella dei valori attesi legge i dati reali',
+            EV ? EV.READS.length + ' letture dichiarate' : 'tabella assente');
+          // I contratti si derivano dai pannelli della pagina (chi disegna cosa)
+          var realDerived = EV.contracts(doc);
+          log(w.CardHelp.keys().every(function (k) { return (realDerived[k] || []).length; }),
+            'Sui dati reali ogni spiegazione riceve dai pannelli le sue grandezze',
+            w.CardHelp.keys().reduce(function (n, k) { return n + (realDerived[k] || []).length; }, 0) +
+            ' promesse derivate dal markup');
+          var realBad = [], realMissing = [], realNums = 0, realStamps = 0;
+          (w.CardHelp.keys()).forEach(function (key) {
+            var appCtx = appData();          // dati e pagina nello stesso istante
+            var b = helpButton(key);
+            if (b) b.click();
+            var r = EV.check(key, appCtx, EV.nowText($('#helpBody')), realDerived[key]);
+            realNums += r.cited;
+            realStamps += r.stamps.length;
+            r.unresolved.forEach(function (c) { realBad.push(key + ':' + c.raw); });
+            r.unresolvedStamps.forEach(function (s) { realBad.push(key + ':data ' + s.raw); });
+            r.missing.forEach(function (m) { realMissing.push(key + ':' + m); });
+          });
+          log(realBad.length === 0, 'Sui dati reali nessun numero citato resta fuori dai dati',
+            realNums + ' numeri in ' + w.CardHelp.keys().length + ' spiegazioni \u00b7 fuori tabella = ' +
+            (realBad.join(', ') || 'nessuno'));
+          log(realMissing.length === 0, 'Sui dati reali ogni spiegazione cita le grandezze che promette',
+            'promesse non mantenute = ' + (realMissing.join(', ') || 'nessuna'));
+          log(realStamps > 0, 'Le date citate (calendario, CFTC) corrispondono ai dati reali',
+            realStamps + ' date/orari verificati');
+          var realCards = EV.compareCards(appData(), frame.contentDocument);
+          log(realCards.bad.length === 0 && realCards.missing.length === 0,
+            'Sui dati reali le card mostrano i valori letti dai dati',
+            realCards.checked + ' valori confrontati \u00b7 scarti = ' + (realCards.bad.join(' | ') || 'nessuno'));
+          var helpOv = $('#helpOverlay');
+          if (helpOv && !helpOv.classList.contains('hidden')) $('#helpClose').click();
 
           // --- giornaliero: 5 anni di storia dichiarati nell'interfaccia ------
           var tf = $('#tfSelect');

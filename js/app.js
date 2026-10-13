@@ -9,6 +9,7 @@
   const F = window.Forecast;
   const IND = window.Indicators;
   const SMC = window.SMC;
+  const DIV = window.Divergence;
   const SEN = window.Sentiment;
   const FX = window.ForexFeed;
   const REP = window.Report;
@@ -24,6 +25,8 @@
     analysis: null,
     smc: null,
     sentiment: null,
+    divergence: null,      // divergenze prezzo / oscillatori
+    pivots: null,          // pivot point del periodo precedente
     confluence: null,
     report: null,
     news: null,             // payload notizie + calendario dal ponte
@@ -43,6 +46,7 @@
   let chart = null;
   let chartEl, tooltipEl;
   let btTimer = null;
+  let divTimer = null;
 
   /* ------------------------------ utilità ------------------------------ */
   const $ = function (id) { return document.getElementById(id); };
@@ -86,6 +90,7 @@
     buildPairSelect();
     loadJournal();
     bindEvents();
+    bindCloseWatch();
     startClock();
     refresh(true).then(function () {
       renderWatchlist();
@@ -135,6 +140,42 @@
     sel.value = state.pair;
   }
 
+  /* ------------------------ chiusura della finestra ------------------------- */
+  /*
+   * Se la pagina e' stata aperta dal lanciatore (`avvia.sh` / `avvia.bat`),
+   * l'indirizzo porta un token (`?chiudi=...`): quando la finestra si chiude
+   * l'app lo dichiara al ponte, che si ferma, e il lanciatore esce. Il token
+   * evita che una pagina qualsiasi possa fermare il ponte, e il ponte aspetta
+   * qualche secondo prima di spegnersi: un ricaricamento manda lo stesso
+   * segnale, ma le prime richieste della pagina ricaricata lo annullano.
+   */
+  function bindCloseWatch() {
+    const found = /[?&]chiudi=([\w.-]+)/.exec(location.search || '');
+    if (!found) return;
+    const token = encodeURIComponent(found[1]);
+
+    // 1. La finestra resta collegata al ponte finche' e' aperta: quando si
+    //    chiude (o si chiude il browser) la connessione cade da sola, quindi il
+    //    ponte lo sa anche se la pagina non fa in tempo a dire niente.
+    if (window.EventSource) {
+      const sessione = new EventSource('/api/sessione?token=' + token);
+      sessione.onerror = function () {
+        // un errore puo' essere un singhiozzo: se pero' il ponte non risponde
+        // piu' non ha senso continuare a riprovare
+        fetch('/api/status', { cache: 'no-store' }).catch(function () { sessione.close(); });
+      };
+    }
+
+    // 2. Il segnale esplicito, per i browser che chiudono la pagina senza
+    //    chiudere subito la connessione.
+    if (!navigator.sendBeacon) return;
+    const tell = function () {
+      try { navigator.sendBeacon('/api/chiudi?token=' + token); } catch (e) { /* niente */ }
+    };
+    window.addEventListener('pagehide', tell);
+    window.addEventListener('beforeunload', tell);
+  }
+
   function bindEvents() {
     $('pairSelect').addEventListener('change', function (e) {
       state.pair = e.target.value;
@@ -170,7 +211,16 @@
       if (e.target === $('reportOverlay')) closeReport();
     });
     document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape' && isReportOpen()) closeReport();
+      if (e.key !== 'Escape') return;
+      if (isHelpOpen()) { closeHelp(); return; }   // prima la finestra in primo piano
+      if (isReportOpen()) closeReport();
+    });
+
+    // --- aiuto delle card: bottoni, chiusura e aggiornamento ---
+    injectHelpButtons();
+    $('helpClose').addEventListener('click', closeHelp);
+    $('helpOverlay').addEventListener('click', function (e) {
+      if (e.target === $('helpOverlay')) closeHelp();
     });
 
     $('simCtx').addEventListener('change', function (e) {
@@ -274,6 +324,7 @@
   function finishRefresh() {
     state.analysis = F.analyze(state.series.candles, state.instrument, state.horizon);
     state.smc = SMC.analyze(state.series.candles, state.analysis.indicators, state.instrument);
+    analyzeExtras();
 
     // cache di tutte le coppie: serve alla watchlist e allo studio di sentiment
     buildMarketCache();
@@ -296,7 +347,21 @@
       repaintPanels();
     }, 30);
 
+    // Studio di efficacia delle divergenze: cammina la serie e verifica quante
+    // volte il movimento e' andato nel verso del segnale (differito, come il
+    // backtest, perche' piu' oneroso della sola lettura corrente).
+    if (divTimer) clearTimeout(divTimer);
+    divTimer = setTimeout(function () {
+      state.divStudy = DIV.backtest(state.series.candles, state.analysis.indicators,
+        state.instrument, {
+          horizon: state.horizon, window: 300,
+          swings: state.smc ? state.smc.swings : null, atr: state.analysis.atr
+        });
+      renderDivergence();
+    }, 45);
+
     chart.setData(state.series, state.analysis, state.instrument, state.smc);
+    chart.setExtras(state.divergence, state.pivots);
     renderDashboard();
     repaintPanels();
     renderHeader();
@@ -304,6 +369,8 @@
     renderConfluence();
     renderSmc();
     renderIndicators();
+    renderTrendIndicators();
+    renderDivergence();
     renderForecast();
     renderContext();
     renderSentiment();
@@ -313,6 +380,25 @@
     // report divulgativo: dati sempre pronti, finestra aggiornata se aperta
     buildReport();
     if (isReportOpen()) renderReport();
+    // spiegazione della card: se e' aperta si aggiorna con i dati appena calcolati
+    if (isHelpOpen()) renderHelp();
+  }
+
+  /** Divergenze e livelli di riferimento: due letture che dipendono dalle
+   *  candele (e dai punti di swing gia' calcolati dallo studio SMC), quindi
+   *  vanno ricalcolate a ogni aggiornamento come gli altri studi. */
+  function analyzeExtras() {
+    const candles = state.series.candles;
+    const a = state.analysis;
+    if (DIV) {
+      state.divergence = DIV.analyze(candles, a.indicators, state.instrument, {
+        lookback: 3,
+        lastIndex: a.index,
+        atr: a.atr,
+        swings: state.smc ? state.smc.swings : null
+      });
+    }
+    state.pivots = IND.pivotPoints(candles, D.TIMEFRAMES[state.tf].minutes);
   }
 
   /** Campi di scelta per lo studio di sentiment. */
@@ -452,6 +538,19 @@
     state.sentimentRealError = null;
     state.confluence = computeConfluence();
   }
+  /**
+   * Ridisegna tutto quello che mostra i numeri del sentiment: la card, il
+   * verdetto, i quadranti della dashboard (che portano lo stesso punteggio
+   * della card) e la spiegazione se e' aperta. Senza questo, un aggiornamento
+   * del sentiment lasciava i quadranti fermi sul punteggio precedente.
+   */
+  function redrawSentimentPanels() {
+    renderSentiment();
+    renderConfluence();
+    renderDashboard();
+    if (isHelpOpen()) renderHelp();
+  }
+
   function refreshRealSentiment(force) {
     if (state.source !== 'real') return Promise.resolve(null);
     const now = Date.now();
@@ -461,7 +560,7 @@
     // le candele appena arrivate senza aspettare la rete.
     if (state.sentimentPayload && state.sentiment && state.sentiment.real) {
       applyRealSentiment(state.sentimentPayload);
-      if (throttled) { renderSentiment(); renderConfluence(); return Promise.resolve(state.sentiment); }
+      if (throttled) { redrawSentimentPanels(); return Promise.resolve(state.sentiment); }
     }
     if (sentimentBusy) return Promise.resolve(null);
     sentimentBusy = true;
@@ -470,8 +569,7 @@
       state.lastSentimentFetch = Date.now();
       if (state.source !== 'real') return null;     // nel frattempo è cambiata la modalità
       applyRealSentiment(payload);
-      renderSentiment();
-      renderConfluence();
+      redrawSentimentPanels();
       buildReport();
       if (isReportOpen()) renderReport();
       return state.sentiment;
@@ -620,6 +718,7 @@
 
     state.analysis = F.analyze(candles, inst, state.horizon);
     state.smc = SMC.analyze(candles, state.analysis.indicators, inst);
+    analyzeExtras();
 
     // aggiorno la coppia selezionata nella cache e ricalcolo lo studio di
     // sentiment (operazione leggera: nessun ricalcolo di indicatori)
@@ -633,6 +732,7 @@
     recomputeSentiment();
 
     chart.setData(state.series, state.analysis, inst, state.smc);
+    chart.setExtras(state.divergence, state.pivots);
     renderDashboard();
     repaintPanels();
     renderHeader();
@@ -640,8 +740,14 @@
     renderConfluence();
     renderSmc();
     renderIndicators();
+    renderTrendIndicators();
+    renderDivergence();
     renderForecast();
     renderSentiment();
+    // anche il contesto di mercato segue il tick: sessioni, volatilità
+    // rispetto alla media e posizione nel range altrimenti resterebbero
+    // fermi al refresh precedente mentre il resto della pagina si aggiorna
+    renderContext();
     // i dati del report si aggiornano, ma la finestra non viene ridisegnata
     // per non spostare la lettura di chi la sta consultando
     buildReport();
@@ -691,6 +797,7 @@
       '  (' + signed(pip(a.target - a.price, inst), 1) + ' pip)';
     $('planSl').textContent = a.stop.toFixed(inst.digits) +
       '  (' + signed(pip(a.stop - a.price, inst), 1) + ' pip)';
+    renderTrailingStop();
     $('planRr').textContent = num(a.rr, 2) + ' : 1';
     $('planExp').textContent = signed(pip(a.expectedMove, inst), 1) + ' pip  (' +
       signed(a.expectedMove / a.price * 100, 2) + '%)';
@@ -717,6 +824,8 @@
     if (score < -0.15) return '<span class="tag bear">RIBASSO</span>';
     return '<span class="tag flat">NEUTRO</span>';
   }
+
+  function scoreColor(s) { return s >= 0.15 ? '#18c98a' : s <= -0.15 ? '#f2555a' : '#5a8fd0'; }
 
   /* -------------------- dashboard: scala, sparkline, evento -------------------- */
   function renderDashboard() {
@@ -874,8 +983,6 @@
       '<div class="gt-l">prezzo vs medie</div>' +
       tagFor(stack.filter(function (r) { return c >= r[1]; }).length / stack.length * 2 - 1) +
       '</div>');
-
-    const scoreColor = function (s) { return s >= 0.15 ? '#18c98a' : s <= -0.15 ? '#f2555a' : '#5a8fd0'; };
 
     if (ind.rsi[i] != null) {
       const s = (ind.rsi[i] - 50) / 50;
@@ -1040,7 +1147,430 @@
     } else if (state.source === 'real' && state.feedInfo && !state.feedInfo.hasVolume) {
       row('Volumi vs media', 'n.d.', 0);
     }
+    /* indicatori di trend e inversione: le stesse voci delle tile */
+    const cloudRow = cloudRead(ind, i, c);
+    const sqRow = squeezeRead(ind, i);
+    if (ind.plusDI[i] != null) {
+      row('+DI / \u2212DI (14)', ind.plusDI[i].toFixed(1) + ' / ' + ind.minusDI[i].toFixed(1),
+        (ind.plusDI[i] - ind.minusDI[i]) / Math.max(10, ind.plusDI[i] + ind.minusDI[i]));
+    }
+    if (ind.adxr[i] != null && ind.adx[i] != null) {
+      row('ADXR (14)', ind.adxr[i].toFixed(1), (ind.adx[i] - ind.adxr[i]) / 6);
+    }
+    if (ind.superTrend && ind.superTrend.line[i] != null) row('SuperTrend (10\u00b73)', ind.superTrend.line[i].toFixed(d), ind.superTrend.dir[i]);
+    if (ind.psar[i] != null) row('Parabolic SAR', ind.psar[i].toFixed(d), ind.psar[i] < c ? 1 : -1);
+    if (cloudRow) {
+      row('Ichimoku 9/26/52', 'Tenkan ' + cloudRow.tenkan.toFixed(d) + ' \u00b7 Kijun ' + cloudRow.kijun.toFixed(d) +
+        ' \u00b7 ' + cloudRow.text, cloudRow.score);
+    }
+    if (ind.aroon.up[i] != null) {
+      row('Aroon (25)', 'Up ' + ind.aroon.up[i].toFixed(0) + ' / Down ' + ind.aroon.down[i].toFixed(0), ind.aroon.osc[i] / 100);
+    }
+    if (ind.vortex.plus[i] != null) {
+      row('Vortex (14)', 'VI+ ' + ind.vortex.plus[i].toFixed(2) + ' / VI\u2212 ' + ind.vortex.minus[i].toFixed(2),
+        (ind.vortex.plus[i] - ind.vortex.minus[i]) / 2);
+    }
+    if (ind.cci[i] != null) row('CCI (20)', ind.cci[i].toFixed(1), -ind.cci[i] / 200);
+    if (ind.stochRsi && ind.stochRsi.k[i] != null) {
+      row('Stochastic RSI %K/%D', ind.stochRsi.k[i].toFixed(1) +
+        (ind.stochRsi.d[i] != null ? ' / ' + ind.stochRsi.d[i].toFixed(1) : ''), (ind.stochRsi.k[i] - 50) / 50);
+    }
+    if (ind.choppiness[i] != null) {
+      row('Choppiness Index (14)', ind.choppiness[i].toFixed(1),
+        ind.choppiness[i] < 38 ? 0.6 : ind.choppiness[i] > 62 ? -0.6 : 0);
+    }
+    if (ind.keltner && ind.keltner.upper[i] != null) {
+      row('Keltner sup./inf.', ind.keltner.lower[i].toFixed(d) + ' / ' + ind.keltner.upper[i].toFixed(d),
+        sqRow && sqRow.squeeze ? 0.2 : 0);
+    }
+    if (ind.linreg && ind.linreg.r2[i] != null) {
+      row('Regressione (50)', 'R\u00b2 ' + ind.linreg.r2[i].toFixed(2) + ' \u00b7 ' +
+        signed(pip(ind.linreg.slope[i], inst), 2) + ' pip/barra', Math.sign(ind.linreg.slope[i]) * ind.linreg.r2[i]);
+    }
+
     $('indTable').querySelector('tbody').innerHTML = rows.join('');
+  }
+
+  /** Stop trailing del SuperTrend: dice se il livello che il trend offre come
+   *  stop dinamico e' coerente con lo scenario operativo in corso. */
+  function renderTrailingStop() {
+    const el = $('planTrail');
+    if (!el) return;
+    const a = state.analysis;
+    const inst = state.instrument;
+    const st = a && a.indicators && a.indicators.superTrend;
+    if (!a || !inst || !st || st.line[a.index] == null) {
+      el.textContent = '\u2014';
+      el.className = 'mono';
+      return;
+    }
+    const line = st.line[a.index];
+    const dir = st.dir[a.index];
+    const allineato = (a.direction === 'BUY' && dir === 1) || (a.direction === 'SELL' && dir === -1);
+    const verso = dir === 1 ? 'sopra il ribasso' : 'sotto il rialzo';
+    el.textContent = line.toFixed(inst.digits) + '  (' + signed(pip(line - a.price, inst), 1) + ' pip' +
+      (allineato ? '' : ', ' + verso) + ')';
+    el.className = 'mono ' + (allineato ? 'pos' : '');
+  }
+
+  /* ------------- divergenze prezzo/oscillatori e pivot point ------------- */
+
+  /**
+   * Tabella dello studio di efficacia: quanti casi, quante volte il movimento
+   * e' andato nel verso del segnale e rendimento medio in multipli di ATR, con
+   * l'incertezza dell'intervallo di confidenza al 95%.
+   */
+  function divStudyHtml(study) {
+    if (!study || !study.count) {
+      return '<p class="dim small">Campionamento insufficiente: servono divergenze gia' +
+        ' concluse dentro la finestra analizzata.</p>';
+    }
+    const rows = [];
+    const row = function (label, st, group) {
+      if (!st || !st.count) return;
+      const pf = st.profitFactor === Infinity ? '\u221e' : st.profitFactor.toFixed(2);
+      const cls = st.significant ? 'pos' : (st.avgR + st.ci95 < 0 ? 'neg' : '');
+      rows.push('<tr' + (group ? ' class="group"' : '') + '>' +
+        '<td>' + label + '</td><td>' + st.count + '</td>' +
+        '<td>' + (st.hitRate * 100).toFixed(0) + '%</td>' +
+        '<td class="' + cls + '">' + (st.avgR >= 0 ? '+' : '') + st.avgR.toFixed(2) + '</td>' +
+        '<td>\u00b1' + Math.abs(st.ci95).toFixed(2) + '</td>' +
+        '<td>' + pf + '</td></tr>');
+    };
+    row('tutte', study.all, true);
+    row('regolari', study.byKind.regular);
+    row('nascoste', study.byKind.hidden);
+    Object.keys(study.byOsc || {}).forEach(function (k) { row(k, study.byOsc[k]); });
+    const v = DIV.verdictOf(study.all);
+    return '<table><thead><tr><th>Segnale</th><th>Casi</th><th>A favore</th>' +
+      '<th>R medio</th><th>Incertezza</th><th>PF</th></tr></thead><tbody>' +
+      rows.join('') + '</tbody></table>' +
+      '<p class="verdict ' + v.level + '">' + v.text + '</p>';
+  }
+
+  /** Pannello con le divergenze rilevate e i livelli di riferimento: stesso
+   *  contenuto sotto il grafico (tab Grafici) e nella tab Analisi tecnica. */
+  function renderDivergence() {
+    const div = state.divergence;
+    const piv = state.pivots;
+    const inst = state.instrument;
+    const a = state.analysis;
+    if (!inst || !a) return;
+    const d = inst.digits;
+    const score = div ? div.score : 0;
+    const arrowOf = function (v) { return v > 0 ? '\u25b2' : v < 0 ? '\u25bc' : '\u25cf'; };
+    const colorOf = function (v) { return v > 0 ? '#18c98a' : v < 0 ? '#f2555a' : '#5a8fd0'; };
+    const tiles = [];
+
+    // lettura complessiva delle divergenze
+    if (div) {
+      const n = div.items.length;
+      tiles.push(trendTile({
+        arrow: arrowOf(score), color: colorOf(score),
+        value: n ? (div.bull + ' rialziste / ' + div.bear + ' ribassiste') : 'nessuna attiva',
+        label: 'Divergenze (RSI \u00b7 MACD) \u2014 ' + div.text,
+        tag: n ? tagFor(score) : '<span class="tag neu">NESSUNA</span>'
+      }));
+    }
+
+    // posizione del prezzo rispetto al pivot centrale
+    if (piv) {
+      const p = piv.classic.p;
+      const sopra = a.price >= p;
+      tiles.push(trendTile({
+        arrow: arrowOf(sopra ? 1 : -1), color: colorOf(sopra ? 1 : -1),
+        value: p.toFixed(d) + '  (' + signed(pip(a.price - p, inst), 1) + ' pip)',
+        label: 'Pivot point \u2014 prezzo ' + (sopra ? 'sopra' : 'sotto') + ' il livello centrale',
+        tag: tagFor(sopra ? 0.4 : -0.4)
+      }));
+    }
+
+    const listRows = (div && div.items.length) ? div.items.map(function (it) {
+      const cls = it.dir > 0 ? 'bull' : 'bear';
+      const tipo = it.kind === 'regular' ? '' : ' nasc.';
+      const verso = it.dir > 0 ? '\u2191' : '\u2193';
+      const estremo = it.extreme ? ' \u00b7 estremo' : '';
+      return '<li>' +
+        '<span class="zt ' + cls + '">' + it.osc + tipo + ' ' + verso + '</span>' +
+        '<span class="zr">' + (it.dir > 0 ? 'minimo' : 'massimo') + ' ' + it.from.price.toFixed(d) +
+        ' \u2192 ' + it.to.price.toFixed(d) + '</span>' +
+        '<span class="zs">' + it.age + ' barre fa' + estremo + '</span></li>';
+    }).join('') : '<li class="empty">Nessuna divergenza fra prezzo e oscillatori nella finestra recente</li>';
+
+    const pivotRows = piv ? [
+      ['R3', piv.classic.r3, 'neg'], ['R2', piv.classic.r2, 'neg'], ['R1', piv.classic.r1, 'neg'],
+      ['Pivot', piv.classic.p, ''],
+      ['S1', piv.classic.s1, 'pos'], ['S2', piv.classic.s2, 'pos'], ['S3', piv.classic.s3, 'pos']
+    ].map(function (row) {
+      return '<div class="kpi"><div class="k">' + row[0] + '</div>' +
+        '<div class="v ' + row[2] + '">' + row[1].toFixed(d) + '</div></div>';
+    }).join('') : '<div class="kpi"><div class="k">Pivot</div><div class="v">non disponibili</div></div>';
+
+    const tilesHtml = tiles.join('');
+    const sets = [
+      { block: 'divBlock', list: 'divList', pivot: 'pivotGrid', stamp: 'divStamp', scope: 'divScope',
+        pstamp: 'pivotStamp', study: 'divStudy', sscope: 'divStudyScope' },
+      { block: 'divBlockChart', list: 'divListChart', pivot: 'pivotGridChart', stamp: 'divStampChart',
+        scope: 'divScopeChart', pstamp: 'pivotStampChart', study: 'divStudyChart', sscope: 'divStudyScopeChart' }
+    ];
+    sets.forEach(function (s) {
+      const block = $(s.block), list = $(s.list), pivot = $(s.pivot);
+      if (block) block.innerHTML = tilesHtml;
+      if (list) list.innerHTML = listRows;
+      if (pivot) pivot.innerHTML = pivotRows;
+      const stamp = $(s.stamp);
+      if (stamp) {
+        stamp.textContent = 'aggiornato alle ' + new Date().toLocaleTimeString('it-IT') +
+          ' \u00b7 ' + (div ? div.items.length : 0) + ' divergenze';
+      }
+      const study = $(s.study);
+      if (study) study.innerHTML = divStudyHtml(state.divStudy);
+      const sscope = $(s.sscope);
+      if (sscope) {
+        // Tre stati distinti: studio non ancora calcolato, calcolato senza
+        // casi, calcolato con casi. "in calcolo" significa solo il primo.
+        sscope.textContent = state.divStudy
+          ? (state.divStudy.count
+              ? state.divStudy.count + ' casi su ' + state.divStudy.window + ' barre, esito a ' +
+                state.divStudy.horizon + ' barre'
+              : 'nessun caso misurabile nella finestra di ' + state.divStudy.window + ' barre')
+          : 'in calcolo';
+      }
+      const scope = $(s.scope);
+      if (scope) scope.textContent = 'RSI e MACD sui punti di swing frattali (3 barre)';
+      const pstamp = $(s.pstamp);
+      if (pstamp) {
+        pstamp.textContent = piv
+          ? 'dal periodo ' + piv.period + ' (max ' + piv.high.toFixed(d) + ' \u00b7 min ' + piv.low.toFixed(d) +
+            ' \u00b7 chiusura ' + piv.close.toFixed(d) + ')'
+          : 'periodo precedente non disponibile';
+      }
+    });
+  }
+
+  /* ---------------- indicatori di trend e di inversione ---------------- */
+
+  /** Posizione del prezzo rispetto alla nuvola di Ichimoku (lettura causale). */
+  function cloudRead(ind, i, price) {
+    const ic = ind.ichimoku;
+    if (!ic || ic.spanA[i] == null || ic.spanB[i] == null || ic.tenkan[i] == null || ic.kijun[i] == null) return null;
+    const top = Math.max(ic.spanA[i], ic.spanB[i]);
+    const bot = Math.min(ic.spanA[i], ic.spanB[i]);
+    return {
+      top: top, bot: bot,
+      tenkan: ic.tenkan[i], kijun: ic.kijun[i], chikou: ic.chikou[i],
+      bullCloud: ic.spanA[i] >= ic.spanB[i],
+      text: price > top ? 'sopra la nuvola' : price < bot ? 'sotto la nuvola' : 'dentro la nuvola',
+      score: price > top ? 1 : price < bot ? -1 : 0
+    };
+  }
+
+  /** Squeeze di volatilita': bande di Bollinger compresse dentro Keltner. */
+  function squeezeRead(ind, i) {
+    if (!ind.keltner || !ind.bb || ind.keltner.upper[i] == null || ind.bb.upper[i] == null) return null;
+    return { squeeze: ind.bb.upper[i] < ind.keltner.upper[i] && ind.bb.lower[i] > ind.keltner.lower[i] };
+  }
+
+  /** Tile di un indicatore: freccia direzionale oppure grafica, valore, nota,
+   *  tag di giudizio. */
+  function trendTile(o) {
+    const head = o.svg ? o.svg
+      : '<div style="font-size:1.45rem;line-height:1.2;color:' + (o.color || '#5a8fd0') + '">' + o.arrow + '</div>';
+    return '<div class="gauge-tile">' + head +
+      '<div class="gt-v">' + o.value + '</div>' +
+      '<div class="gt-l">' + o.label + '</div>' +
+      (o.tag || '') + '</div>';
+  }
+
+  /** Un solo blocco di tile, mostrato in due punti: sotto il grafico (tab
+   *  Grafici) e sotto il segnale operativo (tab Analisi tecnica). */
+  function renderTrendIndicators() {
+    const a = state.analysis;
+    const inst = state.instrument;
+    if (!a || !a.indicators || !inst) return;
+    const ind = a.indicators;
+    const i = a.index;
+    const d = inst.digits;
+    const price = ind.closes[i];
+    const atr = a.atr || 0;
+
+    const BULL = '#18c98a', BEAR = '#f2555a', NEUTRAL = '#5a8fd0';
+    const arrowOf = function (v) { return v > 0 ? '\u25b2' : v < 0 ? '\u25bc' : '\u25cf'; };
+    const colorOf = function (v) { return v > 0 ? BULL : v < 0 ? BEAR : NEUTRAL; };
+    const neuTag = function (t) { return '<span class="tag neu">' + t + '</span>'; };
+    const tiles = [];
+
+    // 1. SuperTrend: direzione e trailing stop
+    if (ind.superTrend && ind.superTrend.line[i] != null) {
+      const dir = ind.superTrend.dir[i];
+      tiles.push(trendTile({
+        arrow: arrowOf(dir), color: colorOf(dir),
+        value: ind.superTrend.line[i].toFixed(d) + '  (' + signed(pip(price - ind.superTrend.line[i], inst), 1) + ' pip)',
+        label: 'SuperTrend (ATR 10 \u00d7 3) \u2014 ' + (dir === 1 ? 'sostegno' : 'resistenza'),
+        tag: tagFor(dir * 0.6)
+      }));
+    }
+
+    // 2. Parabolic SAR: punti di inversione
+    if (ind.psar && ind.psar[i] != null) {
+      const s = ind.psar[i] < price ? 1 : -1;
+      tiles.push(trendTile({
+        arrow: arrowOf(s), color: colorOf(s),
+        value: ind.psar[i].toFixed(d) + '  (' + (atr ? signed((price - ind.psar[i]) / atr, 2) + ' ATR' : '\u2014') + ')',
+        label: 'Parabolic SAR (0,02 / 0,2) \u2014 ' + (s > 0 ? 'sotto il prezzo' : 'sopra il prezzo'),
+        tag: tagFor(s * 0.5)
+      }));
+    }
+
+    // 3. Ichimoku: nuvola, incrocio e conferma del ritardo
+    const cloud = cloudRead(ind, i, price);
+    if (cloud) {
+      tiles.push(trendTile({
+        arrow: arrowOf(cloud.score), color: colorOf(cloud.score),
+        value: 'Kijun ' + cloud.kijun.toFixed(d) + '  (nuvola ' + cloud.bot.toFixed(d) + ' \u2013 ' + cloud.top.toFixed(d) + ')',
+        label: 'Ichimoku 9/26/52 \u2014 prezzo ' + cloud.text +
+          '<br>Tenkan ' + cloud.tenkan.toFixed(d) + ' \u00b7 nuvola ' + (cloud.bullCloud ? 'rialzista' : 'ribassista') +
+          ' \u00b7 Chikou ' + (cloud.chikou > 0 ? '\u25b2' : '\u25bc'),
+        tag: tagFor(cloud.score * 0.7)
+      }));
+    }
+
+    // 4. DMI: +DI contro -DI
+    if (ind.plusDI && ind.plusDI[i] != null) {
+      const p = ind.plusDI[i], m = ind.minusDI[i];
+      const s = p >= m ? 1 : -1;
+      tiles.push(trendTile({
+        arrow: arrowOf(s), color: colorOf(s),
+        value: '+DI ' + p.toFixed(1) + ' / \u2212DI ' + m.toFixed(1),
+        label: 'DMI (14) \u2014 ' + (s > 0 ? 'pressione rialzista' : 'pressione ribassista'),
+        tag: tagFor((p - m) / Math.max(10, p + m))
+      }));
+    }
+
+    // 5. ADXR: la tendenza si rafforza o si spegne?
+    if (ind.adxr && ind.adxr[i] != null && ind.adx[i] != null) {
+      tiles.push(trendTile({
+        svg: Ui.dialSvg(ind.adxr[i], 0, 60, [
+          { from: 0, to: 20, color: 'rgba(120,150,200,.5)' },
+          { from: 20, to: 25, color: '#d9a34a' },
+          { from: 25, to: 60, color: '#18c98a' }
+        ], ind.adxr[i] > 25 ? BULL : NEUTRAL),
+        value: ind.adxr[i].toFixed(1) + '  (ADX ' + ind.adx[i].toFixed(1) + ')',
+        label: 'ADXR (14) \u2014 tendenza ' + (ind.adx[i] >= ind.adxr[i] ? 'in rafforzamento' : 'in esaurimento'),
+        tag: tagFor((ind.adx[i] - ind.adxr[i]) / 6)
+      }));
+    }
+
+    // 6. Aroon: da quante barre il massimo/minimo del periodo e' recente
+    if (ind.aroon && ind.aroon.up[i] != null) {
+      const up = ind.aroon.up[i], dn = ind.aroon.down[i];
+      tiles.push(trendTile({
+        svg: Ui.dialSvg(up, 0, 100, [
+          { from: 0, to: 30, color: 'rgba(120,150,200,.35)' },
+          { from: 30, to: 70, color: 'rgba(120,150,200,.22)' },
+          { from: 70, to: 100, color: 'rgba(24,201,138,.55)' }
+        ], up >= 70 ? BULL : dn >= 70 ? BEAR : NEUTRAL),
+        value: 'Up ' + up.toFixed(0) + ' / Down ' + dn.toFixed(0),
+        label: 'Aroon (25) \u2014 ' + (up >= 70 && dn <= 30 ? 'massimi ribassisti recenti'
+          : dn >= 70 && up <= 30 ? 'minimi rialzisti recenti' : 'nessuna tendenza salda'),
+        tag: tagFor(ind.aroon.osc[i] / 100)
+      }));
+    }
+
+    // 7. Vortex: verso del flusso
+    if (ind.vortex && ind.vortex.plus[i] != null) {
+      const p = ind.vortex.plus[i], m = ind.vortex.minus[i];
+      const s = p >= m ? 1 : -1;
+      tiles.push(trendTile({
+        arrow: arrowOf(s), color: colorOf(s),
+        value: 'VI+ ' + p.toFixed(2) + ' / VI\u2212 ' + m.toFixed(2),
+        label: 'Vortex (14) \u2014 flusso ' + (s > 0 ? 'rialzista' : 'ribassista'),
+        tag: tagFor((p - m) / 2)
+      }));
+    }
+
+    // 8. CCI: oscillatore di inversione
+    if (ind.cci && ind.cci[i] != null) {
+      const v = ind.cci[i];
+      tiles.push(trendTile({
+        svg: Ui.dialSvg(v, -200, 200, [
+          { from: -200, to: -100, color: 'rgba(24,201,138,.55)' },
+          { from: -100, to: 100, color: 'rgba(120,150,200,.4)' },
+          { from: 100, to: 200, color: 'rgba(242,85,90,.55)' }
+        ], scoreColor(-v / 200)),
+        value: v.toFixed(1),
+        label: 'CCI (20) \u2014 ' + (v > 100 ? 'ipercomprato' : v < -100 ? 'ipervenduto' : 'nella norma'),
+        tag: tagFor(-v / 200)
+      }));
+    }
+
+    // 9. Stochastic RSI
+    if (ind.stochRsi && ind.stochRsi.k[i] != null) {
+      const kv = ind.stochRsi.k[i], dv = ind.stochRsi.d[i];
+      tiles.push(trendTile({
+        svg: Ui.dialSvg(kv, 0, 100, [
+          { from: 0, to: 20, color: '#18c98a' },
+          { from: 20, to: 80, color: 'rgba(120,150,200,.5)' },
+          { from: 80, to: 100, color: '#f2555a' }
+        ], scoreColor((kv - 50) / 50)),
+        value: 'K ' + kv.toFixed(1) + ' / D ' + (dv == null ? '\u2014' : dv.toFixed(1)),
+        label: 'Stochastic RSI (14) \u2014 segnale di inversione pi\u00f9 tempestivo',
+        tag: tagFor((kv - 50) / 50)
+      }));
+    }
+
+    // 10. Choppiness Index: regime di mercato
+    if (ind.choppiness && ind.choppiness[i] != null) {
+      const ch = ind.choppiness[i];
+      const label = ch < 38 ? 'trend definito' : ch > 62 ? 'mercato laterale' : 'carattere misto';
+      tiles.push(trendTile({
+        svg: Ui.dialSvg(ch, 0, 100, [
+          { from: 0, to: 38, color: 'rgba(24,201,138,.5)' },
+          { from: 38, to: 62, color: 'rgba(120,150,200,.4)' },
+          { from: 62, to: 100, color: 'rgba(217,163,74,.6)' }
+        ], ch < 38 ? BULL : ch > 62 ? '#d9a34a' : NEUTRAL),
+        value: ch.toFixed(1),
+        label: 'Choppiness Index (14) \u2014 ' + label,
+        tag: neuTag(ch < 38 ? 'TENDENZA' : ch > 62 ? 'LATERALE' : 'MISTO')
+      }));
+    }
+
+    // 11. Keltner e squeeze rispetto alle bande di Bollinger
+    if (ind.keltner && ind.keltner.upper[i] != null) {
+      const up = ind.keltner.upper[i], lo = ind.keltner.lower[i];
+      const sq = squeezeRead(ind, i);
+      const pos = Ui.clamp((price - lo) / ((up - lo) || 1), 0, 1) * 100;
+      tiles.push(trendTile({
+        svg: '<div class="meter" style="margin:16px 0 4px">' +
+          '<span class="meter-zone" style="position:absolute;inset:0">' +
+          '<i style="width:100%;background:rgba(90,143,208,.35)"></i></span>' +
+          '<span style="position:absolute;top:-3px;left:' + pos.toFixed(1) + '%;width:3px;bottom:-3px;background:#fff"></span>' +
+          '</div>',
+        value: lo.toFixed(d) + ' \u2013 ' + up.toFixed(d),
+        label: 'Keltner (20 \u00b7 2 ATR) \u2014 ' + (sq && sq.squeeze ? 'squeeze: Bollinger dentro Keltner' : 'nessuna compressione'),
+        tag: sq && sq.squeeze ? '<span class="tag neg">SQUEEZE</span>' : neuTag('ESPANSO')
+      }));
+    }
+
+    // 12. Regressione lineare: qualita' della tendenza
+    if (ind.linreg && ind.linreg.r2[i] != null) {
+      const r2v = ind.linreg.r2[i], sl = ind.linreg.slope[i];
+      tiles.push(trendTile({
+        arrow: arrowOf(Math.sign(sl) * r2v), color: colorOf(sl),
+        value: 'R\u00b2 ' + r2v.toFixed(2) + '  (' + signed(pip(sl, inst), 2) + ' pip/barra)',
+        label: 'Regressione (50) \u2014 ' + (r2v > 0.6 ? 'tendenza ben definita' : r2v > 0.3 ? 'tendenza moderata' : 'mercato erratico'),
+        tag: tagFor(Math.sign(sl) * r2v)
+      }));
+    }
+
+    const html = tiles.join('');
+    [$('trendBlock'), $('trendBlockTech')].forEach(function (box) {
+      if (box) box.innerHTML = html;
+    });
+    const stamp = 'aggiornato alle ' + new Date().toLocaleTimeString('it-IT') + ' \u00b7 ' + tiles.length + ' indicatori';
+    [$('trendStamp'), $('trendStampTech')].forEach(function (el) {
+      if (el) el.textContent = stamp;
+    });
   }
 
   function renderForecast() {
@@ -1082,10 +1612,18 @@
       ' per barra)</p>' + rows;
   }
 
-  function renderContext() {
+  /**
+   * I numeri del pannello "Contesto di mercato", calcolati una volta sola:
+   * li usa il pannello per disegnarsi e le spiegazioni per citarli, cosi'
+   * l'aiuto non puo' raccontare una finestra diversa da quella mostrata.
+   */
+  const CONTEXT_RANGE_BARS = 100;
+  const CONTEXT_VOL_BARS = 50;
+
+  function contextNumbers() {
     const a = state.analysis;
     const inst = state.instrument;
-    const candles = state.series.candles;
+    const candles = (state.series && state.series.candles) || [];
     const now = new Date();
     const hUtc = now.getUTCHours();
 
@@ -1096,21 +1634,50 @@
     if (hUtc >= 12 && hUtc < 21) sessions.push('New York');
 
     // media ATR a 50 barre per confronto
-    const atrSeries = a.indicators.atr.slice(-50).filter(function (v) { return v != null; });
+    const atrSeries = a && a.indicators ? a.indicators.atr.slice(-CONTEXT_VOL_BARS).filter(function (v) { return v != null; }) : [];
     const atrAvg = atrSeries.reduce(function (x, y) { return x + y; }, 0) / (atrSeries.length || 1);
-    const volRatio = a.atr / atrAvg;
+    const volRatio = a && a.atr && atrAvg ? a.atr / atrAvg : null;
 
-    const window100 = candles.slice(-100);
-    const hi = Math.max.apply(null, window100.map(function (c) { return c.high; }));
-    const lo = Math.min.apply(null, window100.map(function (c) { return c.low; }));
-    const posInRange = (a.price - lo) / (hi - lo);
+    const window = candles.slice(-CONTEXT_RANGE_BARS);
+    const hi = window.length ? Math.max.apply(null, window.map(function (c) { return c.high; })) : null;
+    const lo = window.length ? Math.min.apply(null, window.map(function (c) { return c.low; })) : null;
+    const posInRange = a && lo != null && hi != null && hi > lo ? (a.price - lo) / (hi - lo) : null;
+
+    return {
+      sessions: sessions,
+      hourUtc: hUtc,
+      volRatio: volRatio,
+      volBars: CONTEXT_VOL_BARS,
+      volLabel: volRatio == null ? null : volRatio > 1.3 ? 'espansione' : volRatio < 0.75 ? 'compressione' : 'stabile',
+      rangeBars: window.length,
+      rangeBarsWanted: CONTEXT_RANGE_BARS,
+      rangeLow: lo,
+      rangeHigh: hi,
+      rangePosition: posInRange == null ? null : posInRange * 100,
+      spread: inst ? inst.spread : null,
+      day: now.toLocaleDateString('it-IT', { weekday: 'long' }),
+      adx: a ? a.adx : null
+    };
+  }
+
+  function renderContext() {
+    const a = state.analysis;
+    const inst = state.instrument;
+    const c = contextNumbers();
+    const sessions = c.sessions;
+    const volRatio = c.volRatio;
+    const hi = c.rangeHigh;
+    const lo = c.rangeLow;
+    const posInRange = c.rangePosition == null ? null : c.rangePosition / 100;
 
     const items = [
       ['\ud83d\udd52', 'Sessione attiva', sessions.length ? sessions.join(' + ') : 'Nessuna sessione principale'],
-      ['\ud83d\udcca', 'Volatilit\u00e0 vs media 50', volRatio.toFixed(2) + 'x ' + (volRatio > 1.3 ? '(espansione)' : volRatio < 0.75 ? '(compressione)' : '(stabile)')],
-      ['\ud83d\udccf', 'Posizione nel range 100 barre', (posInRange * 100).toFixed(0) + '% (' + lo.toFixed(inst.digits) + ' \u2013 ' + hi.toFixed(inst.digits) + ')'],
+      ['\ud83d\udcca', 'Volatilit\u00e0 vs media 50', volRatio == null ? 'n.d.'
+        : volRatio.toFixed(2) + 'x (' + c.volLabel + ')'],
+      ['\ud83d\udccf', 'Posizione nel range 100 barre', posInRange == null ? 'n.d.'
+        : (posInRange * 100).toFixed(0) + '% (' + lo.toFixed(inst.digits) + ' \u2013 ' + hi.toFixed(inst.digits) + ')'],
       ['\ud83d\udd01', 'Spread tipico', inst.spread.toFixed(1) + ' pip \u00b7 tipo ' + inst.type],
-      ['\ud83d\udcc5', 'Giorno di contrattazione', now.toLocaleDateString('it-IT', { weekday: 'long' })],
+      ['\ud83d\udcc5', 'Giorno di contrattazione', c.day],
       ['\ud83e\udded', 'Forza del trend (ADX)', a.adx.toFixed(1) + (a.adx > 25 ? ' \u2014 trend definito' : a.adx < 18 ? ' \u2014 mercato laterale' : ' \u2014 direzione incerta')]
     ];
 
@@ -1427,6 +1994,160 @@
     });
   }
 
+  /* ------------------------------ aiuto delle card ------------------------------ */
+
+  // Etichette leggibili dei timeframe, allineate alle voci del selettore.
+  const TF_LABEL = {
+    M5: '5 minuti', M10: '10 minuti', M15: '15 minuti',
+    H1: '1 ora', H4: '4 ore', D1: 'giornaliero'
+  };
+
+  let helpKey = null;
+
+  /** Contesto per le spiegazioni: i dati presenti in questo momento. */
+  function helpCtx() {
+    const inst = state.instrument;
+    const candles = (state.series && state.series.candles) || [];
+    const lastC = candles.length ? candles[candles.length - 1] : null;
+    const prev = candles.length > 1 ? candles[candles.length - 2] : null;
+    const layers = [];
+    document.querySelectorAll('.chart-toggles .chip.active').forEach(function (chip) {
+      layers.push(chip.textContent.trim());
+    });
+    const news = state.news || {};
+    const now = Date.now();
+    const upcoming = (news.calendar || []).filter(function (e) { return e.time >= now; })
+      .sort(function (a, b) { return a.time - b.time; });
+    // Quanti elementi ogni elenco mostra davvero: le spiegazioni citano questi
+    // numeri, cosi' il testo non puo' contraddire quello che si vede a schermo.
+    const countIn = function (sel) { return document.querySelectorAll(sel).length; };
+    const shown = {
+      ob: countIn('#obList li:not(.empty)'),
+      fvg: countIn('#fvgList li:not(.empty)'),
+      liq: countIn('#liqList li:not(.empty)'),
+      divergences: countIn('#divList li:not(.empty)'),
+      pivots: countIn('#pivotGrid .kpi'),
+      news: countIn('#newsList li'),
+      calendar: countIn('#calendarList li'),
+      watchlist: countIn('#watchlist li'),
+      journal: countIn('#journalBody tr:not(.empty-row)')
+    };
+    return {
+      shown: shown,
+      inst: inst,
+      digits: inst ? inst.digits : null,
+      pair: inst ? inst.symbol : state.pair,
+      tf: state.tf,
+      tfLabel: TF_LABEL[state.tf] || state.tf,
+      horizon: state.horizon,
+      source: state.source,
+      price: lastC ? lastC.close : (state.analysis ? state.analysis.price : null),
+      changePct: lastC && prev && prev.close ? (lastC.close - prev.close) / prev.close * 100 : null,
+      lastVolume: lastC ? lastC.volume : null,
+      series: state.series,
+      analysis: state.analysis,
+      smc: state.smc,
+      divergence: state.divergence,
+      pivots: state.pivots,
+      divStudy: state.divStudy,
+      backtest: state.backtest,
+      confluence: state.confluence,
+      sentiment: state.sentiment,
+      news: (news.news || []),
+      calendar: upcoming,
+      context: contextNumbers(),
+      newsSources: news.sourcesOk || null,
+      journal: state.journal,
+      market: state.marketCache,
+      activeLayers: layers
+    };
+  }
+
+  /**
+   * Lettura dello stato per l'automazione e per i test: la stessa fotografia
+   * dei dati che usano le spiegazioni. E' di sola lettura (non espone nulla che
+   * possa modificare l'app) e non viene mai chiamata dal ciclo di disegno: serve
+   * a chi deve confrontare quello che si vede a schermo con i dati che lo
+   * hanno prodotto.
+   */
+  window.ForexApp = {
+    context: helpCtx,
+    helpText: function (key) {
+      if (!window.CardHelp || !window.CardHelp.has(key)) return null;
+      return window.CardHelp.explain(key, helpCtx());
+    },
+    /** Solo le righe "in questo momento", senza le parti generali. */
+    helpNow: function (key) {
+      const e = window.CardHelp && window.CardHelp.EXPLAIN[key];
+      if (!e || !e.now) return null;
+      try { return e.now(helpCtx()); } catch (err) { return null; }
+    },
+    keys: function () { return window.CardHelp ? window.CardHelp.keys() : []; }
+  };
+
+  function isHelpOpen() {
+    const ov = $('helpOverlay');
+    return !!ov && !ov.classList.contains('hidden');
+  }
+
+  /** Rigenera il testo della finestra aperta con i dati di adesso. */
+  function renderHelp() {
+    if (!helpKey || !window.CardHelp) return;
+    const info = window.CardHelp.explain(helpKey, helpCtx());
+    if (!info) return;
+    $('helpTitle').textContent = info.title;
+    $('helpSubtitle').textContent = info.subtitle;
+    $('helpBody').innerHTML = info.html;
+  }
+
+  function openHelp(key) {
+    if (!window.CardHelp || !window.CardHelp.has(key)) return;
+    helpKey = key;
+    renderHelp();
+    const ov = $('helpOverlay');
+    ov.classList.remove('hidden');
+    ov.scrollTop = 0;
+    const body = $('helpBody');
+    body.scrollTop = 0;
+    document.body.style.overflow = 'hidden';
+    const close = $('helpClose');
+    if (close) close.focus();
+  }
+
+  function closeHelp() {
+    const ov = $('helpOverlay');
+    if (ov) ov.classList.add('hidden');
+    helpKey = null;
+    document.body.style.overflow = '';
+  }
+
+  /**
+   * Un bottone "?" su ogni card (dall'attributo data-help) e su ogni grafico
+   * (dagli elementi con data-help-key). Ogni bottone apre la spiegazione della
+   * propria card, ricalcolata sui dati del momento in cui viene aperta.
+   */
+  function injectHelpButtons() {
+    document.querySelectorAll('.card[data-help]').forEach(function (card) {
+      const head = card.querySelector('.card-head') || card;
+      if (head.querySelector('.card-help')) return;      // gia' presente
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'card-help';
+      btn.textContent = '?';
+      btn.setAttribute('data-help-key', card.getAttribute('data-help'));
+      btn.setAttribute('aria-label', 'Spiega questa card: che cosa mostra in generale e che cosa dicono i dati di adesso');
+      btn.title = 'Spiega questa card con i dati di adesso';
+      head.appendChild(btn);
+    });
+    document.querySelectorAll('[data-help-key]').forEach(function (el) {
+      el.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        openHelp(el.getAttribute('data-help-key'));
+      });
+    });
+  }
+
   /* ------------------------------ report divulgativo ------------------------------ */
   function isReportOpen() {
     const ov = $('reportOverlay');
@@ -1446,6 +2167,8 @@
       smc: state.smc,
       sentiment: state.sentiment,
       confluence: state.confluence,
+      divergence: state.divergence,
+      pivots: state.pivots,
       source: {
         mode: state.source,
         info: state.feedInfo,

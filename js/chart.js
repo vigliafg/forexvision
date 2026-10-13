@@ -43,7 +43,19 @@
     pdDiscount: 'rgba(24,201,138,.055)',
     pdPremium: 'rgba(242,85,90,.055)',
     pdEquilibrium: 'rgba(200,220,255,.35)',
-    pdOte: 'rgba(255,204,85,.06)'
+    pdOte: 'rgba(255,204,85,.06)',
+    // --- indicatori di trend e inversione ---
+    stUp: '#18c98a',
+    stDown: '#f2555a',
+    psar: '#ffcc55',
+    ichiCloudUp: 'rgba(24,201,138,.13)',
+    ichiCloudDown: 'rgba(242,85,90,.13)',
+    ichiLine: 'rgba(120,150,200,.8)',
+    ichiBase: '#c77dff',
+    // --- divergenze e pivot point ---
+    pivotRes: 'rgba(242,85,90,.55)',
+    pivotSup: 'rgba(24,201,138,.55)',
+    pivotMid: 'rgba(200,220,255,.55)'
   };
 
   function ForexChart(canvas, tooltipEl) {
@@ -53,7 +65,7 @@
     this.series = null;
     this.analysis = null;
     this.smc = null;
-    this.layers = { ma: true, bb: false, forecast: false, volume: true, smc: true, pd: false };
+    this.layers = { ma: true, bb: false, forecast: false, volume: true, smc: true, pd: false, st: false, psar: false, ichimoku: false, div: false, pivot: false };
     this.visibleCount = 150;
     this.hover = null;
     this.instrument = null;
@@ -87,6 +99,13 @@
     this.analysis = analysis;
     this.instrument = instrument;
     this.smc = smc || null;
+    this.draw();
+  };
+
+  /** Divergenze e pivot point: dati extra che non dipendono dallo studio SMC. */
+  ForexChart.prototype.setExtras = function (divergence, pivots) {
+    this.divergence = divergence || null;
+    this.pivots = pivots || null;
     this.draw();
   };
 
@@ -166,6 +185,35 @@
         min = Math.min(min, p.lower);
       });
     }
+    // i livelli di pivot vicini entrano nella scala, quelli lontani restano
+    // fuori dal disegno per non schiacciare il grafico
+    if (this.layers.pivot && this.pivots) {
+      const span = max - min;
+      const pc = this.pivots.classic;
+      [pc.p, pc.r1, pc.r2, pc.r3, pc.s1, pc.s2, pc.s3].forEach(function (v) {
+        if (v >= min - span * 1.2 && v <= max + span * 1.2) {
+          if (v < min) min = v;
+          if (v > max) max = v;
+        }
+      });
+    }
+
+    // gli indicatori sovrapposti devono restare dentro l'area di prezzo
+    if (ind && (this.layers.st || this.layers.psar || this.layers.ichimoku)) {
+      const sets = [];
+      if (this.layers.st && ind.superTrend) sets.push(ind.superTrend.line);
+      if (this.layers.psar) sets.push(ind.psar);
+      if (this.layers.ichimoku) sets.push(ind.ichimoku.spanA, ind.ichimoku.spanB, ind.ichimoku.tenkan, ind.ichimoku.kijun);
+      sets.forEach(function (arr) {
+        if (!arr) return;
+        for (let i = startIdx; i < candles.length; i++) {
+          const v = arr[i];
+          if (v == null) continue;
+          if (v < min) min = v;
+          if (v > max) max = v;
+        }
+      });
+    }
     const pad = (max - min) * 0.06 || max * 0.002;
     min -= pad; max += pad;
 
@@ -211,6 +259,33 @@
       ctx.fillStyle = 'rgba(61,139,253,.65)';
       ctx.textAlign = 'center';
       ctx.fillText('PREVISIONE', (L.right + L.fcRight) / 2, L.top + 8);
+    }
+
+    // --- livelli di riferimento: pivot point del periodo precedente ---
+    if (this.layers.pivot && this.pivots) {
+      const pc = this.pivots.classic;
+      const rows = [
+        ['R3', pc.r3, COLORS.pivotRes], ['R2', pc.r2, COLORS.pivotRes], ['R1', pc.r1, COLORS.pivotRes],
+        ['P', pc.p, COLORS.pivotMid],
+        ['S1', pc.s1, COLORS.pivotSup], ['S2', pc.s2, COLORS.pivotSup], ['S3', pc.s3, COLORS.pivotSup]
+      ];
+      ctx.font = '9px "JetBrains Mono", monospace';
+      ctx.textAlign = 'right';
+      rows.forEach(function (r) {
+        const y = yOf(r[1]);
+        if (y < L.top - 2 || y > L.priceBottom + 2) return;
+        ctx.strokeStyle = r[2];
+        ctx.lineWidth = r[0] === 'P' ? 1.4 : 1;
+        ctx.setLineDash(r[0] === 'P' ? [6, 4] : [2, 5]);
+        ctx.beginPath();
+        ctx.moveTo(L.left, y);
+        ctx.lineTo(L.right, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = r[2];
+        ctx.fillText(r[0] + ' ' + r[1].toFixed(digits), L.right - 4, y - 6);
+      });
+      ctx.textAlign = 'left';
     }
 
     // --- premio / sconto (SMC) ---
@@ -268,6 +343,31 @@
       }
     }
 
+    // --- nuvola di Ichimoku (dietro le candele) ---
+    if (this.layers.ichimoku && ind && ind.ichimoku) {
+      const ic = ind.ichimoku;
+      let seg = [], segBull = null;
+      const flush = function () {
+        if (seg.length > 1) {
+          ctx.beginPath();
+          seg.forEach(function (p, k) { k ? ctx.lineTo(p.x, p.a) : ctx.moveTo(p.x, p.a); });
+          for (let k = seg.length - 1; k >= 0; k--) ctx.lineTo(seg[k].x, seg[k].b);
+          ctx.closePath();
+          ctx.fillStyle = segBull ? COLORS.ichiCloudUp : COLORS.ichiCloudDown;
+          ctx.fill();
+        }
+        seg = [];
+      };
+      for (let i = startIdx; i < candles.length; i++) {
+        if (ic.spanA[i] == null || ic.spanB[i] == null) { flush(); segBull = null; continue; }
+        const bull = ic.spanA[i] >= ic.spanB[i];
+        if (segBull !== null && bull !== segBull) flush();
+        segBull = bull;
+        seg.push({ x: xOf(i), a: yOf(ic.spanA[i]), b: yOf(ic.spanB[i]) });
+      }
+      flush();
+    }
+
     // --- candele ---
     const bodyW = Math.max(1.5, plotW / count * 0.66);
     const wickW = Math.max(1, bodyW / 6);
@@ -311,6 +411,83 @@
           else ctx.lineTo(x, y);
         }
         ctx.stroke();
+      });
+    }
+
+    // --- SuperTrend: linea colorata dal verso della tendenza ---
+    if (this.layers.st && ind && ind.superTrend) {
+      const stLine = ind.superTrend.line, stDir = ind.superTrend.dir;
+      ctx.lineWidth = 1.7;
+      for (let i = startIdx + 1; i < candles.length; i++) {
+        if (stLine[i] == null || stLine[i - 1] == null) continue;
+        ctx.strokeStyle = stDir[i] === 1 ? COLORS.stUp : COLORS.stDown;
+        ctx.beginPath();
+        ctx.moveTo(xOf(i - 1), yOf(stLine[i - 1]));
+        ctx.lineTo(xOf(i), yOf(stLine[i]));
+        ctx.stroke();
+      }
+    }
+
+    // --- Parabolic SAR: punti di inversione ---
+    if (this.layers.psar && ind && ind.psar) {
+      ctx.fillStyle = COLORS.psar;
+      for (let i = startIdx; i < candles.length; i++) {
+        if (ind.psar[i] == null) continue;
+        ctx.beginPath();
+        ctx.arc(xOf(i), yOf(ind.psar[i]), 1.6, 0, 6.2832);
+        ctx.fill();
+      }
+    }
+
+    // --- Ichimoku: linee della nuvola, Tenkan/Kijun ---
+    if (this.layers.ichimoku && ind && ind.ichimoku) {
+      const ic = ind.ichimoku;
+      [
+        [ic.spanA, COLORS.ichiLine, 1], [ic.spanB, COLORS.ichiLine, 1],
+        [ic.tenkan, COLORS.ema9, 1.2], [ic.kijun, COLORS.ichiBase, 1.2]
+      ].forEach(function (set) {
+        ctx.strokeStyle = set[1];
+        ctx.lineWidth = set[2];
+        ctx.beginPath();
+        let started = false;
+        for (let i = startIdx; i < candles.length; i++) {
+          const v = set[0][i];
+          if (v == null) { started = false; continue; }
+          const x = xOf(i), y = yOf(v);
+          if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      });
+    }
+
+    // --- divergenze: i due swing collegati e la freccia sul piu' recente ---
+    if (this.layers.div && this.divergence && this.divergence.items) {
+      ctx.font = '9px "JetBrains Mono", monospace';
+      this.divergence.items.forEach(function (it) {
+        if (it.to.index < startIdx || it.from.index >= candles.length) return;
+        const x1 = xOf(Math.max(it.from.index, startIdx)), x2 = xOf(it.to.index);
+        const y1 = yOf(it.from.price), y2 = yOf(it.to.price);
+        if (y1 < L.top - 30 || y1 > L.priceBottom + 30 || y2 < L.top - 30 || y2 > L.priceBottom + 30) return;
+        const col = it.dir > 0 ? COLORS.stUp : COLORS.stDown;
+        const verso = it.dir > 0 ? 1 : -1;
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1.4;
+        ctx.setLineDash([5, 3]);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.moveTo(x2, y2 + verso * 10);
+        ctx.lineTo(x2 - 4, y2 + verso * 19);
+        ctx.lineTo(x2 + 4, y2 + verso * 19);
+        ctx.closePath();
+        ctx.fill();
+        ctx.textAlign = 'center';
+        ctx.fillText('DIV ' + it.osc + (it.kind === 'hidden' ? ' nasc.' : ''), x2, y2 + verso * 27);
+        ctx.textAlign = 'left';
       });
     }
 
@@ -430,6 +607,11 @@
       legend.push(['OB', COLORS.obBullEdge], ['FVG', COLORS.fvgBullEdge],
         ['LIQ', COLORS.liq], ['BOS', COLORS.bos], ['CHoCH', COLORS.choch]);
     }
+    if (this.layers.st) legend.push(['SuperTrend', COLORS.stUp]);
+    if (this.layers.psar) legend.push(['SAR', COLORS.psar]);
+    if (this.layers.ichimoku) legend.push(['Ichimoku', COLORS.ichiBase]);
+    if (this.layers.div) legend.push(['Divergenze', COLORS.stUp]);
+    if (this.layers.pivot) legend.push(['Pivot', COLORS.pivotMid]);
     let lx = L.left + 4;
     legend.forEach(function (item) {
       ctx.fillStyle = item[1];

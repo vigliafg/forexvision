@@ -19,7 +19,7 @@ comunque i dati vanno normalizzati e, per alcuni timeframe, ricostruiti.
 
 Uso:
     python3 server.py                  # porta automatica, apre il browser
-    python3 server.py --port 8901
+    python3 server.py --port 8199
     python3 server.py --no-browser
     python3 server.py --test-sink FILE # riceve i report dei test su POST /report
 """
@@ -27,9 +27,12 @@ Uso:
 import argparse
 import email.utils
 import ipaddress
+import itertools
 import json
 import os
 import re
+import secrets
+import select
 import socket
 import sys
 import threading
@@ -45,7 +48,24 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "forexvision")
-DEFAULT_PORT = 8901
+# La porta dell'app. La usa il server quando non gliene si dice un'altra, e i
+# lanciatori (avvia.sh, avvia.bat) la impongono: sempre la stessa, cosi'
+# l'indirizzo da aprire e da ricordare e' uno solo.
+DEFAULT_PORT = 8199
+
+# Chiusura automatica quando il server e' avviato dal lanciatore (avvia.sh /
+# avvia.bat): la pagina manda il segnale quando la finestra si chiude, il ponte
+# aspetta CLOSE_GRACE_SECONDS prima di spegnersi (per non confondere un
+# ricaricamento con una chiusura) e CLOSE_IDLE_SECONDS senza richieste sono la
+# rete di sicurezza se il segnale non arriva proprio (browser chiuso a forza).
+CLOSE_GRACE_SECONDS = 8
+CLOSE_IDLE_SECONDS = 300
+
+# La finestra dell'app tiene aperta una connessione col ponte (/api/sessione):
+# quando la finestra o il browser si chiudono e' il sistema operativo a chiudere
+# la connessione, quindi il ponte se ne accorge subito. Il commento periodico
+# tiene viva la connessione (event-stream) senza mandare dati.
+SESSION_HEARTBEAT_SECONDS = 15
 TTL_SECONDS = 60          # durata della cache: il polling dell'app e' a 60 s
 MAX_BARS = 1500           # candele massime passate al motore di analisi
 HTTP_TIMEOUT = 20
@@ -876,8 +896,15 @@ def _json_safe(obj):
     return obj
 
 
+# Le sessioni aperte: una per finestra dell'app collegata al ponte.
+_SESSIONI = set()
+_SESSIONI_LOCK = threading.Lock()
+_SESSIONE_ID = itertools.count(1)
+
+
 class FeedHandler(SimpleHTTPRequestHandler):
     test_sink = None
+
 
     # ------------------------------------------------------------------ GET
     def do_GET(self):
@@ -888,6 +915,14 @@ class FeedHandler(SimpleHTTPRequestHandler):
         delay = getattr(self.server, "delay_ms", 0)
         if delay and path.startswith("/api/"):
             time.sleep(delay / 1000.0)
+        if path == "/api/chiudi":
+            # il segnale di chiusura arriva da navigator.sendBeacon, cioe' in POST:
+            # una GET sullo stesso indirizzo e' quasi sempre un errore di chi chiama
+            return self._send_json({"ok": False, "error": "usa POST: e' il segnale di "
+                                    "chiusura della finestra"}, status=405)
+        self._touch(path)
+        if path == "/api/sessione":
+            return self.api_sessione()
         if path == "/api/status":
             return self.api_status()
         if path == "/api/candles":
@@ -917,6 +952,10 @@ class FeedHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
+        path = self.path.split("?")[0]
+        if path == "/api/chiudi":
+            return self.api_chiudi()
+        self._touch(path)
         if self.path.startswith("/report") and self.test_sink:
             try:
                 with open(self.test_sink, "wb") as fh:
@@ -933,6 +972,24 @@ class FeedHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     # -------------------------------------------------------------- helpers
+    def _touch(self, path):
+        """Segna che qualcuno sta usando l'app.
+
+        Serve alla chiusura automatica. Annulla un'attesa di spegnimento solo
+        una pagina che si sta caricando (index.html, o la radice): quella e' una
+        finestra viva, ed e' il caso del ricaricamento, dove il segnale di
+        chiusura arriva ma la finestra resta. Le richieste di dati non
+        annullano niente: la pagina le manda anche mentre si chiude, e se
+        l'ultima arriva dopo il segnale l'attesa deve restare in piedi (una
+        richiesta in volo al momento della chiusura rimandava lo spegnimento
+        fino alla rete di sicurezza dei %d secondi).
+        """ % CLOSE_IDLE_SECONDS
+        srv = self.server
+        srv.last_request = time.time()
+        if path.endswith(".html") or path in ("", "/"):
+            srv.app_seen = True
+            srv.close_deadline = None
+
     def _send_bytes(self, data, ctype):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
@@ -1036,6 +1093,74 @@ class FeedHandler(SimpleHTTPRequestHandler):
             }, status=500)
         self._send_json(payload)
 
+    def api_sessione(self):
+        """La finestra dell'app resta collegata al ponte finche' e' aperta.
+
+        E' il segnale piu' affidabile per la chiusura automatica: quando la
+        finestra (o il browser) si chiude, la connessione viene chiusa dal
+        sistema operativo e qui ci se ne accorge subito, senza dipendere da
+        quello che la pagina fa in tempo a mandare. Attiva solo su un ponte
+        avviato dal lanciatore (token).
+        """
+        token = getattr(self.server, "close_token", None)
+        if not token:
+            return self._send_json({"ok": False, "error": "ponte non avviato dal "
+                                    "lanciatore: nessuna sessione da seguire"}, status=409)
+        if self._query().get("token") != token:
+            return self._send_json({"ok": False, "error": "token non valido"}, status=403)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.server.app_seen = True
+        self.server.close_deadline = None            # la finestra c'e': nessuna chiusura in corso
+        sid = next(_SESSIONE_ID)
+        with _SESSIONI_LOCK:
+            _SESSIONI.add(sid)
+        sys.stderr.write("finestra dell'app collegata\n")
+        try:
+            while not getattr(self.server, "stopping", False):
+                pronti, _, _ = select.select([self.connection], [], [], SESSION_HEARTBEAT_SECONDS)
+                if pronti:
+                    # EventSource non manda nulla: qualunque cosa arrivi (dati o
+                    # fine della connessione) significa che la finestra non c'e'
+                    # piu'.
+                    self.connection.recv(1024)
+                    break
+                self.wfile.write(b": attivo\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        except Exception:                             # pragma: no cover
+            pass
+        finally:
+            with _SESSIONI_LOCK:
+                _SESSIONI.discard(sid)
+                aperte = len(_SESSIONI)
+            if not aperte and not getattr(self.server, "stopping", False):
+                sys.stderr.write("finestra dell'app chiusa: fermo il ponte fra %d secondi\n"
+                                 % getattr(self.server, "close_grace", CLOSE_GRACE_SECONDS))
+                self.server.close_deadline = time.time() + getattr(self.server, "close_grace",
+                                                                  CLOSE_GRACE_SECONDS)
+
+    def api_chiudi(self):
+        """La finestra dell'app si e' chiusa: prepara lo spegnimento del ponte.
+
+        Attivo solo quando il server e' stato avviato dal lanciatore (che passa
+        un token): cosi' un ponte avviato a mano non si spegne mai da solo e una
+        pagina qualsiasi non puo' fermarlo senza conoscere il token.
+        """
+        token = getattr(self.server, "close_token", None)
+        if not token:
+            return self._send_json({"ok": False, "error": "ponte non avviato dal "
+                                    "lanciatore: nessuna chiusura automatica"}, status=409)
+        if self._query().get("token") != token:
+            return self._send_json({"ok": False, "error": "token non valido"}, status=403)
+        grace = getattr(self.server, "close_grace", CLOSE_GRACE_SECONDS)
+        self.server.close_deadline = time.time() + grace
+        sys.stderr.write("finestra dell'app chiusa: fermo il ponte fra %d secondi\n" % grace)
+        self._send_json({"ok": True, "chiusuraFraSecondi": grace})
+
     def api_news(self):
         force = self._query().get("force") in ("1", "true", "yes")
         try:
@@ -1054,7 +1179,22 @@ class FeedHandler(SimpleHTTPRequestHandler):
 # ---------------------------------------------------------------------------
 # Avvio
 # ---------------------------------------------------------------------------
-def free_port(preferred, host="127.0.0.1"):
+def free_port(preferred, host="127.0.0.1", strict=False):
+    """La porta su cui ascoltare.
+
+    Con `strict` la porta richiesta e' obbligatoria: se e' occupata il server si
+    ferma invece di spostarsi in silenzio su un'altra. Lo usa il lanciatore, che
+    promette all'utente sempre lo stesso indirizzo.
+    """
+    if strict:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind((host, preferred))
+                return preferred
+            except OSError:
+                raise SystemExit("la porta %d su %s e' gia' occupata: ferma quello che "
+                                 "la usa, oppure avvia con --port N" % (preferred, host))
     for port in [preferred] + list(range(preferred + 1, preferred + 20)):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1064,6 +1204,33 @@ def free_port(preferred, host="127.0.0.1"):
             except OSError:
                 continue
     raise SystemExit("nessuna porta libera disponibile")
+
+
+def watch_app_window(httpd):
+    """Ferma il ponte quando la finestra dell'app non c'e' piu'.
+
+    Due strade. La prima e' il segnale esplicito della pagina (`/api/chiudi`, su
+    `pagehide`): si aspetta qualche secondo, cosi' un ricaricamento - che manda lo
+    stesso segnale - non spegne niente, perche' la pagina ricaricata annulla
+    l'attesa con le sue prime richieste. La seconda e' una rete di sicurezza per
+    quando il segnale non arriva (browser chiuso a forza): nessuna richiesta
+    dall'app per CLOSE_IDLE_SECONDS significa che la finestra non c'e' piu'.
+    """
+    while True:
+        time.sleep(1.0)
+        deadline = getattr(httpd, "close_deadline", None)
+        if deadline is not None and time.time() >= deadline:
+            sys.stderr.write("\nchiusura: fermo il ponte\n")
+            httpd.stopping = True
+            httpd.shutdown()
+            return
+        idle = time.time() - getattr(httpd, "last_request", time.time())
+        if getattr(httpd, "app_seen", False) and idle > CLOSE_IDLE_SECONDS:
+            sys.stderr.write("\nnessuna richiesta dall'app per %d secondi: fermo il ponte\n"
+                             % CLOSE_IDLE_SECONDS)
+            httpd.stopping = True
+            httpd.shutdown()
+            return
 
 
 def local_addresses():
@@ -1121,6 +1288,16 @@ def main():
                         help="indirizzo di ascolto: 127.0.0.1 (solo questa macchina, "
                              "predefinito) oppure 0.0.0.0 (tutta la rete locale e Tailscale)")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--strict-port", action="store_true",
+                        help="la porta richiesta e' obbligatoria: se e' occupata il server "
+                             "si ferma invece di spostarsi su un'altra (lo usa il lanciatore, "
+                             "che promette sempre lo stesso indirizzo)")
+    parser.add_argument("--close-token", nargs="?", const="",
+                        default=os.environ.get("FOREXVISION_CLOSE_TOKEN"),
+                        help="il server si ferma quando la finestra dell'app si chiude. Con un "
+                             "valore usa quel token (lo fa avvia.sh, che apre la pagina da solo); "
+                             "senza valore ne genera uno e apre l'app con ?chiudi=... "
+                             "(e' quello che fa avvia.bat su Windows)")
     parser.add_argument("--test-sink", default=None,
                         help="file dove salvare i report inviati dai test (POST /report)")
     parser.add_argument("--delay-ms", type=int, default=0,
@@ -1136,7 +1313,7 @@ def main():
     except Exception:
         pass
 
-    port = free_port(args.port, args.host)
+    port = free_port(args.port, args.host, strict=args.strict_port)
     FeedHandler.test_sink = args.test_sink
     if args.test_sink:
         try:
@@ -1144,9 +1321,23 @@ def main():
         except Exception:
             pass
 
+    # Il token protegge la chiusura automatica: senza, una pagina qualsiasi
+    # potrebbe fermare il ponte. Generato qui quando il lanciatore non lo passa
+    # (avvia.bat): cosi' il server sa gia' con quale indirizzo aprire l'app.
+    close_token = args.close_token
+    if close_token == "":
+        close_token = secrets.token_urlsafe(12)
+
     server = ThreadingHTTPServer((args.host, port), partial(FeedHandler, directory=ROOT))
     server.delay_ms = max(0, args.delay_ms)
+    server.close_token = close_token or None
+    server.close_grace = CLOSE_GRACE_SECONDS
+    server.close_deadline = None
+    server.last_request = time.time()
+    server.app_seen = False
+    server.stopping = False
     url = "http://127.0.0.1:%d/index.html" % port
+    app_url = url + ("?chiudi=%s" % close_token if close_token else "")
     print("ForexVision in ascolto su http://%s:%d" % (args.host, port))
     if args.host not in ("127.0.0.1", "localhost"):
         addresses = local_addresses()
@@ -1160,9 +1351,15 @@ def main():
     print("  stato      : http://127.0.0.1:%d/api/status" % port)
     if server.delay_ms:
         print("  test       : risposte /api/ rallentate di %d ms" % server.delay_ms)
-    print("  (Ctrl+C per chiudere)")
+    if close_token:
+        print("  app        : %s" % app_url)
+        print("  chiusura   : il ponte si ferma quando chiudi la finestra dell'app")
+    else:
+        print("  (Ctrl+C per chiudere)")
     if not args.no_browser:
-        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.6, lambda: webbrowser.open(app_url)).start()
+    if close_token:
+        threading.Thread(target=watch_app_window, args=(server,), daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -14,7 +14,14 @@
 <body>
 <div id="summary">in esecuzione...</div>
 <div id="log"></div>
+<script>
+  // La tab attiva viene ricordata in localStorage: si azzera PRIMA che l'app
+  // venga caricata, cosi' lo stato di partenza non dipende dai click fatti in
+  // una sessione precedente (il controllo sulla tab iniziale resta veritiero).
+  try { localStorage.removeItem('forexvision.tab'); } catch (e) { /* storage assente */ }
+</script>
 <iframe id="app" src="../index.html?sim=1"></iframe>
+<script src="expected.js"></script>
 <script>
 (function () {
   var out = document.getElementById('log');
@@ -50,10 +57,66 @@
   }
 
   var frame = document.getElementById('app');
+  var started = false;
 
-  frame.addEventListener('load', function () {
-    setTimeout(runChecks, 2600);   // attende il primo tick e il backtest differito
-  });
+  // Il nucleo dell'app e' pronto quando ha disegnato prezzo e backtest.
+  function coreReady(d, w) {
+    if (!d || d.readyState !== 'complete' || !w || !w.ForexData) return false;
+    var lp = d.getElementById('lastPrice');
+    return !!lp && /\d/.test(lp.textContent) &&
+      d.querySelectorAll('#btStats .stat').length >= 8;
+  }
+
+  // Lo studio di efficacia e' differito: e' pronto quando la sua didascalia
+  // non dice piu' "in calcolo". Il numero di righe NON si usa come segnale di
+  // prontezza: senza un ATR valido il rilevatore ripiega sul solo RSI e la
+  // tabella resta piu' corta, quindi un minimo di righe bloccherebbe il test
+  // invece di farlo fallire. Che le righe siano complete lo verificano i
+  // controlli stessi.
+  function studyDone(d) {
+    var sc = d.getElementById('divStudyScope');
+    return !!sc && sc.textContent.trim() !== '' && sc.textContent.indexOf('in calcolo') < 0;
+  }
+
+  function appReady() {
+    var d = frame.contentDocument, w = frame.contentWindow;
+    return coreReady(d, w) && studyDone(d);
+  }
+
+  function begin() {
+    if (started) return;
+    started = true;
+    runChecks();
+  }
+
+  // Il via arriva dai cambi del DOM interno (MutationObserver), non da un
+  // timer: nelle schede non visibili i timer vengono rallentati o congelati,
+  // mentre l'osservatore reagisce subito. Il setTimeout e' solo una rete di
+  // sicurezza per il caso in cui il documento interno venga sostituito.
+  var observedDoc = null;
+  var boot = Date.now();
+  function arm() {
+    if (started) return;
+    if (appReady()) { begin(); return; }
+    var d = frame.contentDocument, w = frame.contentWindow;
+    // rete di sicurezza: se dopo 20 secondi lo studio differito non e'
+    // arrivato, si parte comunque. I controlli falliranno in modo esplicito
+    // invece di lasciare il test bloccato su "in esecuzione...".
+    if (coreReady(d, w) && Date.now() - boot > 20000) { begin(); return; }
+    if (d && d.documentElement && d !== observedDoc) {
+      observedDoc = d;
+      var mo = new MutationObserver(function () {
+        if (started) { mo.disconnect(); return; }
+        if (appReady()) { mo.disconnect(); begin(); }
+      });
+      mo.observe(d.documentElement, {
+        childList: true, subtree: true, characterData: true
+      });
+    }
+    frame.addEventListener('load', arm, { once: true });
+    setTimeout(arm, 700);
+  }
+  arm();
 
   function report() {
     var sum = document.getElementById('summary');
@@ -107,7 +170,298 @@
     log(w0.every(function (v) { return v >= 1 && v <= 97; }), 'Larghezze delle barre entro 1-97%', w0.slice(0, 4).join(',') + ' ...');
 
     // indicatori
-    log($$('#indTable tbody tr').length >= 10, 'Tabella indicatori popolata', 'righe = ' + $$('#indTable tbody tr').length);
+    log($$('#indTable tbody tr').length >= 24, 'Tabella indicatori popolata (classici piu\u0300 trend e inversione)',
+      'righe = ' + $$('#indTable tbody tr').length);
+    log($$('#trendBlock .gauge-tile').length >= 10 && $$('#trendBlockTech .gauge-tile').length >= 10,
+      'Indicatori di trend e inversione sia sotto il grafico sia nella tab analisi tecnica',
+      $$('#trendBlock .gauge-tile').length + ' tile sotto il grafico \u00b7 ' +
+      $$('#trendBlockTech .gauge-tile').length + ' tile nella tab tecnica');
+    log($$('#divBlock .gauge-tile').length === 2 && $$('#divBlockChart .gauge-tile').length === 2,
+      'Riquadri di sintesi di divergenze e pivot nei due pannelli');
+    var trendTxt = $('#trendBlock').textContent + ' ' + $('#trendBlockTech').textContent;
+    log(/SuperTrend/.test(trendTxt) && /Ichimoku/.test(trendTxt) && /Aroon/.test(trendTxt) &&
+      /Vortex/.test(trendTxt) && /CCI/.test(trendTxt) && /Choppiness/.test(trendTxt) && /Keltner/.test(trendTxt),
+      'Tutti gli indicatori di trend e inversione previsti sono presenti');
+    log(/pip/.test(trendTxt), 'Le distanze sono espresse in pip');
+    log($$('.chart-toggles .chip').length === 11, 'Undici sovrapposizioni selezionabili sul grafico',
+      $$('.chart-toggles .chip').length + ' chip');
+    log($$('#divList li').length >= 1 && $$('#divListChart li').length >= 1 &&
+      $$('#pivotGrid .kpi').length === 7 && $$('#pivotGridChart .kpi').length === 7,
+      'Divergenze e pivot sotto il grafico e nella tab analisi tecnica',
+      $$('#divList li').length + ' righe divergenze \u00b7 ' + $$('#pivotGrid .kpi').length + ' livelli pivot');
+    log(/R3|Pivot/.test($('#pivotGrid').textContent) && /S3/.test($('#pivotGrid').textContent),
+      'Livelli di pivot mostrati da R3 a S3');
+
+    // studio di efficacia delle divergenze (differito, come il backtest)
+    var stRows = $$('#divStudy table tbody tr'), stRows2 = $$('#divStudyChart table tbody tr');
+    log(stRows.length >= 3 && stRows2.length === stRows.length &&
+      $$('#divStudy table thead th').length === 6 &&
+      /^tutte$/.test(stRows[0].querySelector('td').textContent),
+      'Studio di efficacia delle divergenze nei due pannelli',
+      stRows.length + ' righe \u00b7 ' + $$('#divStudy table thead th').length + ' colonne');
+    var stTxt = $('#divStudy') ? $('#divStudy').textContent : '';
+    log(/Casi/.test(stTxt) && /A favore/.test(stTxt) && /R medio/.test(stTxt) &&
+      /Incertezza/.test(stTxt) && /PF/.test(stTxt),
+      'Lo studio mostra casi, quota a favore, rendimento medio, incertezza e profit factor');
+    log(/tutte/.test(stTxt) && /regolari/.test(stTxt) && /nascoste/.test(stTxt) &&
+      /RSI/.test(stTxt) && /MACD/.test(stTxt),
+      'Lo studio ripartisce per tipo di divergenza e per oscillatore');
+    log(stRows.every(function (tr) {
+        var tds = tr.querySelectorAll('td');
+        return tds.length === 6 && /^\d+$/.test(tds[1].textContent) && /%$/.test(tds[2].textContent) &&
+          /^[+-]?\d+\.\d{2}$/.test(tds[3].textContent) && /\u00b1\d+\.\d{2}$/.test(tds[4].textContent) &&
+          /^([\d.]+|\u221e)$/.test(tds[5].textContent);
+      }), 'Le righe dello studio sono numeriche e complete', stRows.length + ' righe');
+    log(/(\d+ casi su \d+ barre, esito a \d+ barre|nessun caso misurabile nella finestra di \d+ barre)/
+      .test($('#divStudyScope').textContent) &&
+      /nessun vantaggio misurabile|vantaggio misurabile|esito medio negativo/.test(stTxt),
+      'Lo studio dichiara quanti casi ha misurato e il verdetto', $('#divStudyScope').textContent);
+    log($('#divStudyChart').textContent === stTxt && $$('.div-study .verdict').length === 2,
+      'Lo studio e il verdetto coincidono nei due pannelli');
+
+    // --- spiegazioni delle card: un bottone su ogni card e su ogni grafico ---
+    var helpKeys = w.CardHelp ? w.CardHelp.keys() : [];
+    var helpBtns = $$('.card-help');
+    var cardsWithout = $$('.card').filter(function (c) { return !c.querySelector('.card-help'); });
+    log(!!w.CardHelp && cardsWithout.length === 0 && helpBtns.length >= 19,
+      'Ogni card ha il bottone che la spiega',
+      $$('.card').length + ' card \u00b7 ' + helpBtns.length + ' bottoni (grafici compresi)');
+    var unknownKeys = helpBtns.map(function (b) { return b.getAttribute('data-help-key'); })
+      .filter(function (k) { return !/^[a-zA-Z]+$/.test(k) || helpKeys.indexOf(k) < 0; });
+    log(unknownKeys.length === 0, 'Ogni bottone punta a una spiegazione esistente',
+      'chiavi senza spiegazione = ' + (unknownKeys.join(', ') || 'nessuna'));
+    log(helpKeys.length === helpBtns.length,
+      'Le spiegazioni disponibili corrispondono ai bottoni disegnati',
+      helpKeys.length + ' spiegazioni per ' + helpBtns.length + ' bottoni');
+    var chartHelpBtns = $$('.chart-help-row .card-help').map(function (b) { return b.getAttribute('data-help-key'); });
+    log(chartHelpBtns.length === 2 && chartHelpBtns.indexOf('spark') >= 0 && chartHelpBtns.indexOf('equity') >= 0,
+      'Anche i grafici minori hanno il proprio bottone', chartHelpBtns.join(', '));
+
+    // ogni bottone apre la sua finestra, con tre sezioni e testo utile
+    var helpBad = [], helpTitles = [], helpBullets = 0;
+    helpBtns.forEach(function (b) {
+      b.click();
+      var key = b.getAttribute('data-help-key');
+      var body = $('#helpBody'), title = $('#helpTitle').textContent.trim();
+      var text = body.textContent || '';
+      var h2 = $$('#helpBody .rep-h2').map(function (x) { return x.textContent; });
+      if (h2.length !== 3 || !/Che cosa mostra questa card/.test(h2[0]) || !/Come si legge/.test(h2[1]) ||
+        !/In questo momento/.test(h2[2])) helpBad.push(key + ':sezioni');
+      if (!title) helpBad.push(key + ':titolo');
+      if (/undefined|NaN|\[object|Infinity|null/.test(text)) helpBad.push(key + ':valori');
+      if ($$('#helpBody .rep-ul li').length < 3) helpBad.push(key + ':righe');
+      if (!/^[\w\s\u00c0-\u00ff'\(\)&\.—-]+$/.test(title)) helpBad.push(key + ':titolo-strano');
+      helpTitles.push(title); helpBullets += $$('#helpBody .rep-ul li').length;
+    });
+    log(helpBad.length === 0, 'Tutte le finestre si aprono con le tre sezioni e senza valori senza senso',
+      helpBtns.length + ' finestre \u00b7 ' + helpBullets + ' righe \u00b7 problemi = ' + (helpBad.join(', ') || 'nessuno'));
+    log(helpTitles.filter(function (t) { return !!t; }).length === helpBtns.length,
+      'Ogni finestra ha il titolo della card che l\u2019ha aperta', helpTitles.slice(0, 4).join(' / ') + ' ...');
+
+    // la finestra resta aperta e si aggiorna seguendo lo stato della pagina
+    log(!$('#helpOverlay').classList.contains('hidden') &&
+      /EUR\/USD/.test($('#helpSubtitle').textContent) && /simulati/.test($('#helpSubtitle').textContent),
+      'La didascalia dichiara coppia e natura dei dati', $('#helpSubtitle').textContent);
+    var chipPivot = $$('.chart-toggles .chip').filter(function (c) { return c.dataset.layer === 'pivot'; })[0];
+    chipPivot.click();
+    $$('.card-help').filter(function (b) { return b.getAttribute('data-help-key') === 'chart'; })[0].click();
+    log(/Sovrapposizioni accese: ([^.]*)/.test($('#helpBody').textContent) &&
+      /Pivot/.test($('#helpBody').textContent.match(/Sovrapposizioni accese: ([^.]*)/)[1]),
+      'La spiegazione del grafico segue le sovrapposizioni accese adesso',
+      ($('#helpBody').textContent.match(/Sovrapposizioni accese: ([^.]*)/) || ['', ''])[1]);
+    chipPivot.click();                       // Pivot di nuovo spento
+    function overlayLine() {
+      var m = $('#helpBody').textContent.match(/Sovrapposizioni accese: ([^.]*)/);
+      return m ? m[1] : '';
+    }
+    // si riapre la finestra dopo aver spento la sovrapposizione, poi si confronta
+    // la riga letta con lo stato vero dei pulsanti in quel momento
+    $$('.card-help').filter(function (b) { return b.getAttribute('data-help-key') === 'chart'; })[0].click();
+    var chipState = $$('.chart-toggles .chip.active').map(function (c) { return c.textContent.trim(); }).join(', ');
+    log(overlayLine() === chipState && !/Pivot/.test(overlayLine()),
+      'La lettura della finestra combacia con le sovrapposizioni accese adesso', overlayLine());
+
+    // --- controllo incrociato: la tabella dei valori attesi, generata dai dati.
+    // Qui non c'e' nessun numero scritto a mano: la tabella (tests/expected.js)
+    // legge i dati dell'app e dichiara quali grandezze ogni spiegazione promette
+    // di mostrare. Il test pretende che il testo citi quelle, che nessun numero
+    // sia inventato e che le card mostrino gli stessi valori. Lettura e confronto
+    // stanno nello stesso blocco sincrono: nessun aggiornamento puo' infilarsi
+    // in mezzo, perche' i dati cambiano solo dentro il giro di disegno.
+    var EV = window.ExpectedValues;
+    // Il contesto dati si legge a ogni giro: il tick "live" puo' scattare fra
+    // una spiegazione e l'altra, e dati e pagina devono restare lo stesso
+    // istante (dentro un blocco sincrono, invece, non cambiano).
+    function appData() { return w.ForexApp && w.ForexApp.context ? w.ForexApp.context() : null; }
+    log(!!EV && !!appData(), 'La tabella dei valori attesi e il contesto dati dell\u2019app sono disponibili',
+      EV ? EV.READS.length + ' letture dichiarate' : 'tabella assente');
+
+    function helpButton(key) {
+      return $$('.card-help').filter(function (b) { return b.getAttribute('data-help-key') === key; })[0];
+    }
+    // La lettura della sezione "In questo momento" e il confronto con le card
+    // stanno nella tabella: sono gli stessi che usa la suite sui dati reali.
+    function nowSectionText() { return EV.nowText($('#helpBody')); }
+    // Se la chiave non esiste il test deve segnalarlo, non morire a meta'
+    // strada: senza bottone il testo e' vuoto e i confronti falliscono in chiaro.
+    function openHelp(key) {
+      var b = helpButton(key);
+      if (!b) return false;
+      b.click();
+      return true;
+    }
+    function helpText(key) { return openHelp(key) ? $('#helpBody').textContent : ''; }
+    var helpKeysAll = w.CardHelp.keys();
+    // Che cosa ogni spiegazione promette non e' scritto a mano: si legge dal
+    // markup della pagina, cioe' da quali grandezze ogni pannello disegna.
+    var derived = EV.contracts(doc);
+    var domKeys = Object.keys(EV.owners(doc));
+    var noPanel = helpKeysAll.filter(function (k) { return domKeys.indexOf(k) < 0; });
+    var noCard = domKeys.filter(function (k) { return helpKeysAll.indexOf(k) < 0; });
+    log(noPanel.length === 0 && noCard.length === 0,
+      'Ogni spiegazione ha il suo pannello e ogni pannello la sua spiegazione',
+      (noPanel.length || noCard.length)
+        ? 'senza pannello: ' + (noPanel.join(', ') || 'nessuno') +
+          ' \u00b7 senza spiegazione: ' + (noCard.join(', ') || 'nessuno')
+        : domKeys.length + ' pannelli collegati');
+    /* Un pannello che mostra numeri e non promette nessuna lettura e' un buco:
+     * la sua spiegazione non e' legata a niente. Un pannello vuoto invece non
+     * promette niente, ed e' giusto cosi'. */
+    var ownersMap = EV.owners(doc);
+    var silent = helpKeysAll.filter(function (k) {
+      var shows = (ownersMap[k] || []).some(function (el) { return /\d/.test(el.textContent || ''); });
+      return shows && !(derived[k] || []).length;
+    });
+    var promised = helpKeysAll.reduce(function (n, k) { return n + (derived[k] || []).length; }, 0);
+    log(silent.length === 0, 'Nessun pannello che mostra numeri resta senza letture promesse',
+      silent.length ? 'muti: ' + silent.join(', ')
+        : promised + ' promesse derivate dai pannelli su ' + helpKeysAll.length + ' spiegazioni');
+    var crossBad = [], crossMissing = [], crossEmpty = [], numbersSeen = 0, stampsSeen = 0;
+    helpKeysAll.forEach(function (key) {
+      var appCtx = appData();              // dati e pagina nello stesso istante
+      helpText(key);                       // apre la finestra sulla card
+      var r = EV.check(key, appCtx, nowSectionText(), derived[key]);
+      numbersSeen += r.cited;
+      stampsSeen += r.stamps.length;
+      r.unresolved.forEach(function (c) { crossBad.push(key + ':' + c.raw); });
+      r.unresolvedStamps.forEach(function (s) { crossBad.push(key + ':data ' + s.raw); });
+      r.missing.forEach(function (m) { crossMissing.push(key + ':' + m); });
+      if (r.promised > 0 && r.cited === 0) crossEmpty.push(key);
+    });
+    log(crossBad.length === 0, 'Nessun numero inventato: ogni cifra citata viene dai dati',
+      numbersSeen + ' numeri in ' + helpKeysAll.length + ' spiegazioni \u00b7 fuori tabella = ' +
+      (crossBad.join(', ') || 'nessuno'));
+    log(crossMissing.length === 0, 'Ogni spiegazione cita davvero le grandezze che promette',
+      'promesse non mantenute = ' + (crossMissing.join(', ') || 'nessuna'));
+    log(crossEmpty.length === 0, 'Ogni spiegazione porta almeno un dato del momento',
+      crossEmpty.length ? 'senza numeri: ' + crossEmpty.join(', ') : 'tutte con numeri');
+    log(stampsSeen > 0, 'Date e orari citati corrispondono ai dati (calendario e orologio)',
+      stampsSeen + ' date/orari verificati');
+    var tableRows = EV.table(appData());
+    var poolSize = EV.pool(appData()).length;
+    log(tableRows.length >= 80 && poolSize >= 200,
+      'La tabella dei valori attesi e\u2019 piena, non un guscio vuoto',
+      tableRows.length + ' righe \u00b7 ' + poolSize + ' forme numeriche attese · ' +
+      EV.STRUCT.length + ' costanti di formula dichiarate');
+
+    // le card devono mostrare gli stessi valori che la tabella legge dai dati
+    var cards = EV.compareCards(appData(), doc);
+    log(cards.missing.length === 0, 'Ogni grandezza della tabella punta a una card presente',
+      cards.checked + ' collegamenti \u00b7 selettori assenti = ' + (cards.missing.join(', ') || 'nessuno'));
+    log(cards.bad.length === 0, 'Le card mostrano i valori letti dai dati',
+      cards.checked + ' valori confrontati con la pagina \u00b7 scarti = ' + (cards.bad.join(' | ') || 'nessuno'));
+
+    // i conteggi delle spiegazioni devono combaciare con le righe in elenco
+    function countIn(sel) { return $$(sel).length; }
+    var listBad = [];
+    // SMC: "validi su individuati", quindi il sottoinsieme non puo' superare il totale
+    var smcListTxt = helpText('smc');
+    [[smcListTxt.match(/Order block: (\d+) ancora validi su (\d+) individuati/), 'order block'],
+      [smcListTxt.match(/Fair value gap: (\d+) aperti su (\d+) individuati/), 'fair value gap'],
+      [smcListTxt.match(/Livelli di liquidit[^:]*: (\d+) individuati, (\d+) ancora intatti/), 'liquidita']
+    ].forEach(function (pair) {
+      var m = pair[0];
+      if (!m) { listBad.push(pair[1] + ': conteggio non trovato'); return; }
+      if (pair[1] === 'liquidita') {
+        if (Number(m[2]) > Number(m[1])) listBad.push(pair[1] + ': intatti ' + m[2] + ' > individuati ' + m[1]);
+      } else if (Number(m[1]) > Number(m[2])) {
+        listBad.push(pair[1] + ': validi ' + m[1] + ' > individuati ' + m[2]);
+      }
+    });
+    // notizie: le righe in elenco non possono superare quelle ricevute, e devono
+    // corrispondere a quante ne sono disegnate
+    var newsM = helpText('news').match(/Titoli ricevuti: (\d+) \(in elenco: (\d+)\)/);
+    if (!newsM) listBad.push('notizie: conteggio non trovato');
+    else {
+      if (Number(newsM[2]) > Number(newsM[1])) listBad.push('notizie: in elenco ' + newsM[2] + ' > ricevuti ' + newsM[1]);
+      if (Number(newsM[2]) !== countIn('#newsList li')) {
+        listBad.push('notizie: dichiara ' + newsM[2] + ', in elenco ' + countIn('#newsList li'));
+      }
+    }
+    // divergenze: due pannelli, ciascuno confrontato con il proprio elenco
+    [[ 'divChart', '#divListChart li:not(.empty)'], ['divTech', '#divList li:not(.empty)']].forEach(function (c) {
+      var m = helpText(c[0]).match(/Divergenze attive: (\d+)/);
+      var inList = countIn(c[1]);
+      if (!m) listBad.push(c[0] + ': conteggio non trovato');
+      else if (Number(m[1]) !== inList) listBad.push(c[0] + ': dichiara ' + m[1] + ', in elenco ' + inList);
+    });
+    log(listBad.length === 0, 'I conteggi della spiegazione reggono il confronto con gli elenchi',
+      'problemi = ' + (listBad.join(' | ') || 'nessuno'));
+    // e le quote dichiarate combaciano con le righe davvero disegnate
+    // (i conteggi delle liste li verifica la tabella, che li legge dai dati)
+    var smcTxt = helpText('smc');
+    // la struttura e l'evento SMC devono coincidere con quanto scritto in cima alla card
+    log(/Struttura rialzista/.test(smcTxt) === /Rialzista/.test($('#smcBias').textContent) &&
+      /Ultimo evento di struttura: (BOS|CHoCH)/.test(smcTxt) &&
+      $('#smcEvent').textContent.indexOf(smcTxt.match(/Ultimo evento di struttura: (BOS|CHoCH)/)[1]) >= 0,
+      'Struttura, evento e punteggio della spiegazione combaciano con la card SMC',
+      $('#smcBias').textContent.replace(/\s+/g, ' ').trim());
+    var dvtTxt = helpText('dashVerdict');
+    log($('#confVerdict').textContent.indexOf(dvtTxt.match(/Verdetto complessivo: (\w+)/)[1]) >= 0,
+      'Il verdetto della spiegazione e quello della card sono lo stesso',
+      dvtTxt.match(/Verdetto complessivo: \w+ con [\d\/a-z ]+/)[0]);
+    var sentTxt = helpText('sentiment');
+    log($('#sentBadge .sent-dir').textContent.trim() === sentTxt.match(/Lettura complessiva: (\w+)/)[1],
+      'La lettura del sentiment combacia con il badge della card',
+      $('#sentBadge .sent-dir').textContent.trim() + ' \u00b7 ' + sentTxt.match(/Lettura complessiva: \w+/)[0]);
+    var evTxt = helpText('dashEvent');
+    var evTitle = evTxt.match(/Prossimo evento: ([^\u00b7]+)/);
+    log(!evTitle || $('#dashEvent').textContent.indexOf(evTitle[1].trim().slice(0, 18)) >= 0,
+      'Il prossimo evento citato e quello mostrato nella card',
+      evTitle ? evTitle[1].trim().slice(0, 28) : 'nessun evento in arrivo');
+    $('#helpClose').click();
+
+    // contenuto scorrevole: si restringe l'area visibile come su uno schermo
+    // normale, altrimenti in un riquadro alto 2000px non serve scorrere
+    var helpBody = $('#helpBody');
+    var frameH = frame.style.height;
+    frame.style.height = '700px';
+    $$('.card-help').filter(function (b) { return b.getAttribute('data-help-key') === 'divChart'; })[0].click();
+    var scrollabile = helpBody.scrollHeight > helpBody.clientHeight + 20;
+    log(scrollabile, 'Il testo della finestra e\u2019 scorrevole su uno schermo normale',
+      helpBody.clientHeight + 'px visibili su ' + helpBody.scrollHeight + 'px');
+    log(w.getComputedStyle(helpBody).overflowY === 'auto',
+      'Il riquadro del testo ha lo scorrimento abilitato nel foglio di stile',
+      w.getComputedStyle(helpBody).overflowY);
+    helpBody.scrollTop = 300;
+    log(helpBody.scrollTop > 0 && helpBody.scrollTop <= helpBody.scrollHeight,
+      'Lo scorrimento del testo funziona', 'posizione = ' + helpBody.scrollTop);
+    var corpoAlto = Math.round(helpBody.getBoundingClientRect().height);
+    log(corpoAlto <= 700 && corpoAlto > 200,
+      'La finestra non supera l\u2019altezza dello schermo', corpoAlto + 'px su 700px di area');
+    frame.style.height = frameH || '';
+    $('#helpClose').click();
+    log($('#helpOverlay').classList.contains('hidden'), 'La finestra si chiude con il bottone Chiudi');
+    $$('.card-help').filter(function (b) { return b.getAttribute('data-help-key') === 'signal'; })[0].click();
+    log(!$('#helpOverlay').classList.contains('hidden'), 'La finestra si riapre su un\u2019altra card');
+    doc.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    log($('#helpOverlay').classList.contains('hidden'), 'La finestra si chiude con Esc');
+    $$('.card-help').filter(function (b) { return b.getAttribute('data-help-key') === 'backtest'; })[0].click();
+    var ov = $('#helpOverlay');
+    ov.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+    log(ov.classList.contains('hidden'), 'La finestra si chiude cliccando lo sfondo');
+    log($('#planTrail').textContent !== '\u2014' && /pip/.test($('#planTrail').textContent),
+      'Stop trailing del SuperTrend nel piano operativo', $('#planTrail').textContent);
 
     // watchlist
     log($$('#watchlist li').length === 14, 'Watchlist con tutti i 14 strumenti', 'voci = ' + $$('#watchlist li').length);
